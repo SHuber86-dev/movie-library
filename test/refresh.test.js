@@ -37,6 +37,7 @@ function load(tabs) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/Code.gs'), 'utf8'), ctx);
   ctx.buildData_ = () => ({ items: [] });
   ctx.matchDisc_ = () => ['movie:1'];
+  ctx.warmLibraryCache = () => {};
   return { ctx, sheets };
 }
 
