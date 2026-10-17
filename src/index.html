@@ -84,9 +84,14 @@ function render(data) {
     if (!map[k]) { map[k] = { key: k, discs: [], items: items }; state.groups.push(map[k]); }
     map[k].discs.push(d);
   });
-  state.groups.sort(function (a, b) { return a.discs[0].title.localeCompare(b.discs[0].title); });
+  state.groups.sort(function (a, b) { return sortTitle(a.discs[0].title).localeCompare(sortTitle(b.discs[0].title)); });
   applyFilters();
   if (state.openKey) openGroup(state.openKey);
+}
+
+// "The Matrix" sorts under M.
+function sortTitle(t) {
+  return t.replace(/^(the|a|an)\s+/i, '');
 }
 
 function matches(g) {
@@ -102,7 +107,7 @@ function matches(g) {
     if (status === 'out' && d.where === d.owner) return false;
     if (status === 'mine' && d.owner !== me && d.where !== me) return false;
     if (format && d.formats.indexOf(format) < 0) return false;
-    if (type && d.type.indexOf(type) !== 0) return false;
+    if (type && (type === 'TV' ? d.type.indexOf('TV') !== 0 : d.type !== type)) return false;
     return true;
   });
   if (!discs.length) return false;

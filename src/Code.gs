@@ -200,8 +200,10 @@ function ensureKeys() {
   if (n < 1) return;
   var titles = sh.getRange(2, 1, n, 1).getValues();
   var keys = sh.getRange(2, keyCol, n, 1).getValues();
+  // Metadata keeps the keys of deleted rows, so a new disc never inherits a deleted disc's key and history.
+  var used = keys.map(function (k) { return k[0]; }).concat(Object.keys(readMetadata_()));
   var max = 0;
-  keys.forEach(function (k) { var m = /^d-(\d+)$/.exec(k[0]); if (m) max = Math.max(max, +m[1]); });
+  used.forEach(function (k) { var m = /^d-(\d+)$/.exec(k); if (m) max = Math.max(max, +m[1]); });
   var changed = false;
   for (var i = 0; i < n; i++) {
     if (titles[i][0] && !keys[i][0]) { keys[i][0] = 'd-' + ('000' + (++max)).slice(-4); changed = true; }
@@ -214,45 +216,76 @@ function ensureKeys() {
 /** Fetches TMDB data for new or changed rows and logs manual "where?" edits. Run by triggers. */
 function refreshMetadata() {
   clearLibraryCache_(); // the sheet may have just been edited
-  ensureKeys();
-  var inv = readInventory_();
-  var msh = sheet_(METADATA_SHEET, METADATA_HEADERS);
-  var table = readTable_(msh);
-  var byKey = {};
-  table.rows.forEach(function (r, i) { byKey[r.id] = { row: r, rowIndex: i + 2 }; });
-  var fetches = 0;
-
-  inv.rows.forEach(function (d) {
-    if (!d.key || !d.title) return;
-    var entry = byKey[d.key];
-    var m = entry ? entry.row : null;
-    var where = d.where || d.owner;
-
-    if (m && m.where_seen && m.where_seen !== where) {
-      sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([d.key, d.title, m.where_seen, where, new Date(), '', 'edited in sheet']);
-    }
-
-    var manual = m && (m.manual === true || String(m.manual).toUpperCase() === 'TRUE');
-    var stale = !m || !m.data_json ||
-      (!manual && (m.title_seen !== d.title || String(m.year_seen) !== d.yearRaw));
-    var record = m ? METADATA_HEADERS.map(function (h) { return m[h]; }) : [d.key, '', '', '', false, '', '', '', ''];
-    record[7] = where;
-
-    if (stale && fetches < MAX_FETCHES_PER_RUN) {
-      fetches++;
-      try {
-        var ids = manual && m.tmdb_ids ? splitList(m.tmdb_ids) : matchDisc_(d);
-        var data = buildData_(d, ids);
-        record = [d.key, d.title, d.yearRaw, ids.join(', '), manual, JSON.stringify(data), new Date(), where, ids.length ? '' : 'no match'];
-      } catch (e) {
-        record[8] = String(e.message || e);
-      }
-    }
-
-    if (entry) msh.getRange(entry.rowIndex, 1, 1, record.length).setValues([record]);
-    else { msh.appendRow(record); byKey[d.key] = { row: {}, rowIndex: msh.getLastRow() }; }
-  });
+  fetchMetadata_(syncWhere_());
   clearLibraryCache_(); // new metadata and logged edits are in the sheet now
+}
+
+/**
+ * Logs manual "where?" edits and adds Metadata rows for new discs. Holds the same lock as lending,
+ * so overlapping runs and lends never log a move twice. Returns the rows that need TMDB data.
+ */
+function syncWhere_() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    ensureKeys();
+    var inv = readInventory_();
+    var msh = sheet_(METADATA_SHEET, METADATA_HEADERS);
+    var byKey = {};
+    readTable_(msh).rows.forEach(function (r, i) { byKey[r.id] = { row: r, rowIndex: i + 2 }; });
+    var todo = [];
+    inv.rows.forEach(function (d) {
+      if (!d.key || !d.title) return;
+      var entry = byKey[d.key];
+      var where = d.where || d.owner;
+      if (!entry) {
+        msh.appendRow([d.key, '', '', '', false, '', '', where, '']);
+        entry = byKey[d.key] = { row: { id: d.key, where_seen: where }, rowIndex: msh.getLastRow() };
+      } else if (entry.row.where_seen !== where) {
+        if (entry.row.where_seen) {
+          sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([d.key, d.title, entry.row.where_seen, where, new Date(), '', 'edited in sheet']);
+        }
+        msh.getRange(entry.rowIndex, 8).setValue(where);
+      }
+      if (isStale_(entry.row, d)) todo.push({ disc: d, meta: entry.row, rowIndex: entry.rowIndex });
+    });
+    return todo;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Fills in TMDB data for up to MAX_FETCHES_PER_RUN rows. Only one run fetches at a time; the next trigger picks up the rest. */
+function fetchMetadata_(todo) {
+  var lock = LockService.getDocumentLock();
+  if (!lock.tryLock(0)) return;
+  try {
+    var msh = sheet_(METADATA_SHEET, METADATA_HEADERS);
+    todo.slice(0, MAX_FETCHES_PER_RUN).forEach(function (t) {
+      var d = t.disc;
+      var manual = isManual_(t.meta);
+      try {
+        var ids = manual && t.meta.tmdb_ids ? splitList(t.meta.tmdb_ids) : matchDisc_(d);
+        var data = buildData_(d, ids);
+        // Columns A-G only: where_seen (H) belongs to syncWhere_ and lending, which may have changed it meanwhile.
+        msh.getRange(t.rowIndex, 1, 1, 7).setValues([[d.key, d.title, d.yearRaw, ids.join(', '), manual, JSON.stringify(data), new Date()]]);
+        msh.getRange(t.rowIndex, 9).setValue(ids.length ? '' : 'no match');
+      } catch (e) {
+        msh.getRange(t.rowIndex, 9).setValue(String(e.message || e));
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function isManual_(m) {
+  return m.manual === true || String(m.manual).toUpperCase() === 'TRUE';
+}
+
+/** The sheet turns a title like "1917" into a number, so compare as strings. */
+function isStale_(m, d) {
+  return !m.data_json || (!isManual_(m) && (String(m.title_seen) !== d.title || String(m.year_seen) !== d.yearRaw));
 }
 
 function setWhereSeen_(key, where) {
