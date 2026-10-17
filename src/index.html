@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <style>
+    body { background: #0f1115; }
+    .poster { aspect-ratio: 2 / 3; }
+  </style>
+</head>
+<body class="text-gray-100 font-sans">
+  <header class="sticky top-0 z-10 bg-[#0f1115]/95 backdrop-blur border-b border-white/10">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap gap-2 items-center">
+      <h1 class="text-lg font-semibold mr-auto">🎬 Movie Library</h1>
+      <span id="who" class="text-sm text-gray-400"></span>
+    </div>
+    <div class="max-w-7xl mx-auto px-4 pb-3 flex flex-wrap gap-2 text-sm">
+      <input id="q" placeholder="Search title, cast, director…" class="flex-1 min-w-[12rem] bg-white/5 rounded px-3 py-2 outline-none focus:ring-1 ring-white/30">
+      <select id="fOwner" class="bg-white/5 rounded px-2 py-2"><option value="">All owners</option></select>
+      <select id="fStatus" class="bg-white/5 rounded px-2 py-2">
+        <option value="">Any status</option><option value="home">At owner</option><option value="out">Lent out</option><option value="mine">My shelf</option>
+      </select>
+      <select id="fFormat" class="bg-white/5 rounded px-2 py-2">
+        <option value="">All formats</option><option>HD Blu Ray</option><option>4k Blu Ray</option><option>3D Blu Ray</option>
+      </select>
+      <select id="fType" class="bg-white/5 rounded px-2 py-2">
+        <option value="">All types</option><option>Film</option><option>Film collection</option><option value="TV">TV</option>
+      </select>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 py-4">
+    <p id="status" class="text-gray-400 text-sm mb-3">Loading library…</p>
+    <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"></div>
+  </main>
+
+  <div id="modal" class="fixed inset-0 z-20 hidden bg-black/70 overflow-y-auto" onclick="if (event.target === this) closeModal()">
+    <div id="detail" class="max-w-3xl mx-auto my-6 mx-4 sm:mx-auto bg-[#171a21] rounded-xl overflow-hidden"></div>
+  </div>
+
+  <footer class="max-w-7xl mx-auto px-4 py-6 text-xs text-gray-500">
+    Movie data and images from <a class="underline" href="https://www.themoviedb.org" target="_blank">TMDB</a>.
+    This product uses the TMDB API but is not endorsed or certified by TMDB.
+  </footer>
+
+<script>
+var IMG = 'https://image.tmdb.org/t/p/';
+var state = { data: null, groups: [] };
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function load() {
+  google.script.run.withSuccessHandler(render).withFailureHandler(fail).getLibrary();
+}
+
+function fail(err) {
+  document.getElementById('status').textContent = 'Error: ' + (err && err.message || err);
+}
+
+function render(data) {
+  state.data = data;
+  document.getElementById('who').textContent = 'Signed in as ' + data.user.name;
+  var owners = {};
+  data.discs.forEach(function (d) { owners[d.owner] = true; });
+  var sel = document.getElementById('fOwner');
+  var current = sel.value;
+  sel.innerHTML = '<option value="">All owners</option>' + Object.keys(owners).sort().map(function (o) {
+    return '<option>' + esc(o) + '</option>';
+  }).join('');
+  sel.value = current;
+
+  // One card per movie: discs whose metadata is a single identical TMDB title are grouped together.
+  var map = {};
+  state.groups = [];
+  data.discs.forEach(function (d) {
+    var items = d.meta && d.meta.items || [];
+    var k = items.length === 1 ? items[0].kind + ':' + items[0].tmdbId : 'disc:' + d.key;
+    if (!map[k]) { map[k] = { key: k, discs: [], items: items }; state.groups.push(map[k]); }
+    map[k].discs.push(d);
+  });
+  state.groups.sort(function (a, b) { return a.discs[0].title.localeCompare(b.discs[0].title); });
+  applyFilters();
+  if (state.openKey) openGroup(state.openKey);
+}
+
+function matches(g) {
+  var q = document.getElementById('q').value.trim().toLowerCase();
+  var owner = document.getElementById('fOwner').value;
+  var status = document.getElementById('fStatus').value;
+  var format = document.getElementById('fFormat').value;
+  var type = document.getElementById('fType').value;
+  var me = state.data.user.name;
+  var discs = g.discs.filter(function (d) {
+    if (owner && d.owner !== owner) return false;
+    if (status === 'home' && d.where !== d.owner) return false;
+    if (status === 'out' && d.where === d.owner) return false;
+    if (status === 'mine' && d.owner !== me && d.where !== me) return false;
+    if (format && d.formats.indexOf(format) < 0) return false;
+    if (type && d.type.indexOf(type) !== 0) return false;
+    return true;
+  });
+  if (!discs.length) return false;
+  if (!q) return true;
+  var hay = [g.discs[0].title, g.discs[0].notes].concat(g.items.map(function (i) {
+    return [i.title, (i.cast || []).join(' '), (i.directors || []).join(' '), (i.genres || []).join(' ')].join(' ');
+  })).join(' ').toLowerCase();
+  return hay.indexOf(q) >= 0;
+}
+
+function applyFilters() {
+  var shown = state.groups.filter(matches);
+  document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles';
+  document.getElementById('grid').innerHTML = shown.map(card).join('');
+}
+
+function card(g) {
+  var d = g.discs[0];
+  var item = g.items[0];
+  var out = g.discs.some(function (x) { return x.where !== x.owner; });
+  var poster = item && item.poster
+    ? '<img loading="lazy" class="poster w-full object-cover" src="' + IMG + 'w342' + esc(item.poster) + '" alt="">'
+    : '<div class="poster w-full flex items-center justify-center p-3 text-center text-sm text-gray-400 bg-white/5">' + esc(d.title) + '</div>';
+  return '<button class="text-left group" onclick="openGroup(\'' + esc(g.key) + '\')">' +
+    '<div class="relative rounded-lg overflow-hidden ring-1 ring-white/10 group-hover:ring-white/40 transition">' + poster +
+      (g.items.length > 1 ? '<span class="absolute top-2 left-2 text-xs bg-black/70 rounded px-1.5 py-0.5">' + g.items.length + ' films</span>' : '') +
+      (out ? '<span class="absolute top-2 right-2 text-xs bg-amber-500 text-black rounded px-1.5 py-0.5">lent</span>' : '') +
+    '</div>' +
+    '<div class="mt-1.5 text-sm font-medium leading-tight">' + esc(d.title) + '</div>' +
+    '<div class="text-xs text-gray-400">' + esc(d.years[0] || '') + ' · ' + esc(formatBadges(g.discs)) + '</div>' +
+  '</button>';
+}
+
+function formatBadges(discs) {
+  var f = {};
+  discs.forEach(function (d) { d.formats.forEach(function (x) { f[x.replace(' Blu Ray', '').replace('4k', '4K')] = true; }); });
+  return Object.keys(f).join(' / ');
+}
+
+function openGroup(key) {
+  var g = state.groups.filter(function (x) { return x.key === key; })[0];
+  if (!g) return closeModal();
+  state.openKey = key;
+  var first = g.items[0];
+  var backdrop = first && first.backdrop ? '<img class="w-full h-48 sm:h-64 object-cover opacity-70" src="' + IMG + 'w1280' + esc(first.backdrop) + '" alt="">' : '';
+  var films = g.items.length ? g.items.map(itemBlock).join('') :
+    '<p class="text-sm text-gray-400">No movie data yet. It is fetched automatically within the hour.</p>';
+  document.getElementById('detail').innerHTML =
+    '<div class="relative">' + backdrop +
+      '<button onclick="closeModal()" class="absolute top-3 right-3 bg-black/60 rounded-full w-8 h-8">✕</button></div>' +
+    '<div class="p-5 space-y-5">' +
+      '<h2 class="text-2xl font-semibold">' + esc(g.discs[0].title) + '</h2>' +
+      films +
+      '<div><h3 class="text-sm uppercase tracking-wide text-gray-400 mb-2">Copies</h3>' + g.discs.map(copyBlock).join('') + '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function itemBlock(i) {
+  var facts = [i.year, i.runtime ? i.runtime + ' min' : '', i.episodes ? i.episodes + ' episodes' : '', (i.genres || []).join(', '),
+    i.rating ? '★ ' + i.rating + ' TMDB' : ''].filter(Boolean).join(' · ');
+  var links = (i.imdbId ? '<a class="underline" target="_blank" href="https://www.imdb.com/title/' + esc(i.imdbId) + '/">IMDb</a> · ' : '') +
+    '<a class="underline" target="_blank" href="https://www.themoviedb.org/' + esc(i.kind) + '/' + esc(i.tmdbId) + '">TMDB</a>';
+  return '<div class="flex gap-4">' +
+    (i.poster ? '<img class="w-24 rounded hidden sm:block self-start" src="' + IMG + 'w185' + esc(i.poster) + '" alt="">' : '') +
+    '<div class="space-y-1 text-sm">' +
+      '<div class="font-medium text-base">' + esc(i.title) + '</div>' +
+      '<div class="text-gray-400">' + esc(facts) + '</div>' +
+      '<p class="text-gray-200">' + esc(i.overview) + '</p>' +
+      (i.directors && i.directors.length ? '<div class="text-gray-400">By ' + esc(i.directors.join(', ')) + '</div>' : '') +
+      (i.cast && i.cast.length ? '<div class="text-gray-400">With ' + esc(i.cast.join(', ')) + '</div>' : '') +
+      '<div class="text-gray-400">' + links + '</div>' +
+    '</div></div>';
+}
+
+function copyBlock(d) {
+  var me = state.data.user.name;
+  var canAct = me === d.owner || me === d.where;
+  var others = state.data.people.filter(function (p) { return p !== d.where; });
+  var actions = '';
+  if (canAct) {
+    actions = '<div class="flex flex-wrap gap-2 mt-2">' +
+      '<select id="to-' + esc(d.key) + '" class="bg-white/5 rounded px-2 py-1 text-sm">' +
+        others.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join('') + '</select>' +
+      '<button class="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm" onclick="lend(\'' + esc(d.key) + '\')">Lend</button>' +
+      (d.where !== d.owner ? '<button class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-sm" onclick="giveBack(\'' + esc(d.key) + '\')">Mark returned</button>' : '') +
+    '</div>';
+  }
+  var history = d.history.length ? '<details class="mt-2 text-xs text-gray-400"><summary class="cursor-pointer">History (' + d.history.length + ')</summary>' +
+    d.history.slice().reverse().map(function (h) {
+      return '<div>' + esc(new Date(h.at).toLocaleDateString()) + ': ' + esc(h.from) + ' → ' + esc(h.to) + (h.note ? ' (' + esc(h.note) + ')' : '') + '</div>';
+    }).join('') + '</details>' : '';
+  return '<div class="rounded-lg bg-white/5 p-3 mb-2 text-sm">' +
+    '<div><span class="font-medium">' + esc(d.formats.join(', ')) + '</span>' + (d.notes && d.type.indexOf('collection') < 0 ? ' · ' + esc(d.notes) : '') + '</div>' +
+    '<div class="text-gray-400">Owner: ' + esc(d.owner) + ' · Currently at: <span class="' + (d.where !== d.owner ? 'text-amber-400' : '') + '">' + esc(d.where) + '</span></div>' +
+    actions + history + '</div>';
+}
+
+function lend(key) {
+  var to = document.getElementById('to-' + key).value;
+  busy();
+  google.script.run.withSuccessHandler(render).withFailureHandler(fail).lendDisc(key, to);
+}
+
+function giveBack(key) {
+  busy();
+  google.script.run.withSuccessHandler(render).withFailureHandler(fail).returnDisc(key);
+}
+
+function busy() { document.getElementById('status').textContent = 'Saving…'; }
+
+function closeModal() {
+  state.openKey = null;
+  document.getElementById('modal').classList.add('hidden');
+}
+
+['q', 'fOwner', 'fStatus', 'fFormat', 'fType'].forEach(function (id) {
+  document.getElementById(id).addEventListener('input', applyFilters);
+});
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
+load();
+</script>
+</body>
+</html>

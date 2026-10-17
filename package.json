@@ -1,0 +1,13 @@
+{
+  "name": "movie-library",
+  "private": true,
+  "description": "Shared Blu-ray library: a Google Apps Script web app on top of a Google Sheet",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "push": "clasp push",
+    "deploy": "clasp push && clasp deploy"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  }
+}
