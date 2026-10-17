@@ -74,12 +74,13 @@ function render(data) {
   }).join('');
   sel.value = current;
 
-  // One card per movie: discs whose metadata is a single identical TMDB title are grouped together.
+  // One card per movie: discs matched to the same single TMDB movie are grouped together.
+  // TV discs always get their own card, since seasons of one show share a TMDB id.
   var map = {};
   state.groups = [];
   data.discs.forEach(function (d) {
     var items = d.meta && d.meta.items || [];
-    var k = items.length === 1 ? items[0].kind + ':' + items[0].tmdbId : 'disc:' + d.key;
+    var k = items.length === 1 && items[0].kind === 'movie' ? 'movie:' + items[0].tmdbId : 'disc:' + d.key;
     if (!map[k]) { map[k] = { key: k, discs: [], items: items }; state.groups.push(map[k]); }
     map[k].discs.push(d);
   });
@@ -114,7 +115,9 @@ function matches(g) {
 
 function applyFilters() {
   var shown = state.groups.filter(matches);
-  document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles';
+  var discCount = shown.reduce(function (n, g) { return n + g.discs.length; }, 0);
+  document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles · ' +
+    discCount + ' of ' + state.data.discs.length + ' discs';
   document.getElementById('grid').innerHTML = shown.map(card).join('');
 }
 
