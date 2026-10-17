@@ -210,7 +210,8 @@ function itemBlock(i) {
   var facts = [i.year, i.runtime ? i.runtime + ' min' : '', i.episodes ? i.episodes + ' episodes' : '', (i.genres || []).join(', '),
     i.rating ? '★ ' + i.rating + ' TMDB' : ''].filter(Boolean).join(' · ');
   var links = (i.imdbId ? '<a class="underline" target="_blank" href="https://www.imdb.com/title/' + esc(i.imdbId) + '/">IMDb</a> · ' : '') +
-    '<a class="underline" target="_blank" href="https://www.themoviedb.org/' + esc(i.kind) + '/' + esc(i.tmdbId) + '">TMDB</a>';
+    '<a class="underline" target="_blank" href="https://www.themoviedb.org/' + esc(i.kind) + '/' + esc(i.tmdbId) + '">TMDB</a> · ' +
+    '<a class="underline" target="_blank" href="' + esc(trailerUrl(i)) + '">▶ Trailer</a>';
   return '<div class="flex gap-4">' +
     (i.poster ? '<img loading="lazy" decoding="async" class="w-24 rounded hidden sm:block self-start" src="' + IMG + 'w185' + esc(i.poster) + '" alt="">' : '') +
     '<div class="space-y-1 text-sm">' +
@@ -221,6 +222,12 @@ function itemBlock(i) {
       (i.cast && i.cast.length ? '<div class="text-gray-400">With ' + esc(i.cast.join(', ')) + '</div>' : '') +
       '<div class="text-gray-400">' + links + '</div>' +
     '</div></div>';
+}
+
+// The trailer TMDB lists, or a YouTube search when it lists none.
+function trailerUrl(i) {
+  if (i.trailer) return 'https://www.youtube.com/watch?v=' + encodeURIComponent(i.trailer);
+  return 'https://www.youtube.com/results?search_query=' + encodeURIComponent(i.title + ' ' + (i.year || '') + ' trailer');
 }
 
 function copyBlock(d) {
