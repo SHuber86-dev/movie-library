@@ -21,15 +21,25 @@ var USERS_HEADERS = ['email', 'name'];
 var MAX_FETCHES_PER_RUN = 40;
 var CACHE_KEY = 'library';
 var CACHE_SECONDS = 3600; // safety net; lending and sheet changes clear the cache right away
+var WARM_MINUTES = 30;    // warmLibraryCache refills the cache well before it expires
 var CACHE_CHUNK = 90000;  // CacheService values are limited to 100 KB each
 
 // ---------- Web app ----------
 
 function doGet() {
-  return HtmlService.createTemplateFromFile('index')
-    .evaluate()
+  var page = HtmlService.createTemplateFromFile('index');
+  // Build the library into the page when the cache is warm, saving a round trip.
+  // On a cold cache the page loads at once and fetches the data itself.
+  var shared = readLibraryCache_();
+  page.initialJson = shared ? embedJson_({ user: currentUser_(), people: shared.people, discs: shared.discs }) : 'null';
+  return page.evaluate()
     .setTitle('Movie Library')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+/** JSON that is safe to place inside a <script> tag. */
+function embedJson_(data) {
+  return JSON.stringify(data).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
 function include(name) {
@@ -110,15 +120,16 @@ function clearLibraryCache_() {
   CacheService.getScriptCache().remove(CACHE_KEY + ':n');
 }
 
-function lendDisc(key, toName) {
-  return changeHolder_(key, toName, 'lent');
+/** seenWhere is where the page showed the disc; if the sheet now says otherwise, nothing is written. */
+function lendDisc(key, toName, seenWhere) {
+  return changeHolder_(key, toName, 'lent', seenWhere);
 }
 
-function returnDisc(key) {
-  return changeHolder_(key, null, 'returned');
+function returnDisc(key, seenWhere) {
+  return changeHolder_(key, null, 'returned', seenWhere);
 }
 
-function changeHolder_(key, toName, note) {
+function changeHolder_(key, toName, note, seenWhere) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
@@ -127,6 +138,10 @@ function changeHolder_(key, toName, note) {
     if (!row) throw new Error('Disc not found. Reload the page.');
     var user = currentUser_();
     var holder = row.where || row.owner;
+    if (seenWhere && seenWhere !== holder) {
+      clearLibraryCache_();
+      throw new Error(row.title + ' is now at ' + holder + '. The page has been refreshed, please try again.');
+    }
     if (user.name !== row.owner && user.name !== holder) {
       throw new Error('Only ' + row.owner + ' or ' + holder + ' can change where this disc is.');
     }
@@ -252,7 +267,12 @@ function refreshMetadata() {
     if (entry) msh.getRange(entry.rowIndex, 1, 1, record.length).setValues([record]);
     else { msh.appendRow(record); byKey[d.key] = { row: {}, rowIndex: msh.getLastRow() }; }
   });
-  clearLibraryCache_(); // new metadata and logged edits are in the sheet now
+  warmLibraryCache(); // new metadata and logged edits are in the sheet now
+}
+
+/** Rebuilds the cached library from the sheet. Runs on a timer so visitors rarely hit a cold cache. */
+function warmLibraryCache() {
+  writeLibraryCache_(buildLibrary_());
 }
 
 function setWhereSeen_(key, where) {
@@ -379,6 +399,7 @@ function setup() {
   ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('refreshMetadata').timeBased().everyHours(1).create();
   ScriptApp.newTrigger('refreshMetadata').forSpreadsheet(SpreadsheetApp.getActive()).onChange().create();
+  ScriptApp.newTrigger('warmLibraryCache').timeBased().everyMinutes(WARM_MINUTES).create();
   refreshMetadata();
 }
 

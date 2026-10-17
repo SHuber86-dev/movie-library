@@ -23,7 +23,7 @@ All of this happens in your browser, signed in to the Google account that owns t
 3. Setup:
    - adds a hidden `id` column to your inventory tab,
    - creates the `Metadata`, `Loans` and `Users` tabs,
-   - installs an hourly trigger and an on-change trigger,
+   - installs an hourly trigger, an on-change trigger and a 30-minute trigger that keeps the app fast,
    - fetches metadata for the first 40 discs.
 
    The triggers fetch the rest over the next couple of hours. Run `refreshMetadata` a few times if you don't want to wait.
