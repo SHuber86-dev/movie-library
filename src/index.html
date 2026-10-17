@@ -7,6 +7,18 @@
   <style>
     body { background: #0f1115; }
     .poster { aspect-ratio: 2 / 3; }
+    /* Desktop filter dropdowns: solid dark fields with readable option lists, and a clear
+       highlight on any filter that is not at its default. Phones keep their native look. */
+    @media (min-width: 640px) {
+      #filters select {
+        background: #1d2230; color: #f3f4f6; border: 1px solid #3b4252;
+        color-scheme: dark; cursor: pointer;
+      }
+      #filters select:hover { border-color: #7b8494; }
+      #filters select:focus { outline: none; border-color: #e5e7eb; box-shadow: 0 0 0 1px #e5e7eb; }
+      #filters select option { background: #1d2230; color: #f3f4f6; }
+      #filters select.is-set { background: #f59e0b; color: #111827; border-color: #fbbf24; font-weight: 600; }
+    }
   </style>
 </head>
 <body class="text-gray-100 font-sans">
@@ -15,7 +27,7 @@
       <h1 class="text-lg font-semibold mr-auto">🎬 Movie Library</h1>
       <span id="who" class="text-sm text-gray-400"></span>
     </div>
-    <div class="max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-4 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
+    <div id="filters" class="max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-4 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
       <input id="q" placeholder="Search title, cast, director…" class="col-span-4 sm:flex-1 sm:min-w-[12rem] bg-white/5 rounded px-3 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
       <select id="fOwner" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">All owners</option></select>
       <select id="fStatus" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
@@ -109,6 +121,7 @@ function render(data, stale) {
     return '<option>' + esc(o) + '</option>';
   }).join('');
   sel.value = current;
+  markSetFilters();
 
   // One card per movie: discs matched to the same single TMDB movie are grouped together.
   // TV discs always get their own card, since seasons of one show share a TMDB id.
@@ -152,6 +165,14 @@ function matches(g) {
     return [i.title, (i.cast || []).join(' '), (i.directors || []).join(' '), (i.genres || []).join(' ')].join(' ');
   })).join(' ').toLowerCase();
   return hay.indexOf(q) >= 0;
+}
+
+// Highlights dropdowns that are set to something other than their first ("All …") option.
+function markSetFilters() {
+  ['fOwner', 'fStatus', 'fFormat', 'fType'].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.classList.toggle('is-set', el.value !== '');
+  });
 }
 
 function applyFilters() {
@@ -277,6 +298,7 @@ function closeModal() {
 
 ['q', 'fOwner', 'fStatus', 'fFormat', 'fType'].forEach(function (id) {
   document.getElementById(id).addEventListener('input', applyFilters);
+  document.getElementById(id).addEventListener('input', markSetFilters);
 });
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
 load();
