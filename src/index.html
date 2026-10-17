@@ -32,6 +32,7 @@
 
   <main class="max-w-7xl mx-auto px-4 py-4">
     <p id="status" class="text-gray-400 text-sm mb-3">Loading library…</p>
+    <p id="notice" class="hidden fixed bottom-4 left-4 right-4 sm:left-auto sm:max-w-sm z-30 bg-amber-500 text-black text-sm rounded-lg px-4 py-3 shadow-lg"></p>
     <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"></div>
   </main>
 
@@ -46,6 +47,8 @@
 
 <script>
 var IMG = 'https://image.tmdb.org/t/p/';
+var STORE_KEY = 'movie-library:v1';
+var INITIAL = <?!= initialJson ?>;
 var state = { data: null, groups: [] };
 
 function esc(s) {
@@ -54,16 +57,49 @@ function esc(s) {
   });
 }
 
+// Data comes from the page itself (warm cache) or from this browser's last copy, shown at once.
+// Either way the sheet is asked again in the background; lending always checks the sheet first.
 function load() {
-  google.script.run.withSuccessHandler(render).withFailureHandler(fail).getLibrary();
+  var saved = null;
+  if (!INITIAL) {
+    try { saved = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
+  }
+  if (INITIAL) fresh(INITIAL);
+  else {
+    if (saved) render(saved, true);
+    refresh();
+  }
+}
+
+function refresh() {
+  google.script.run.withSuccessHandler(fresh).withFailureHandler(fail).getLibrary();
+}
+
+function fresh(data) {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) {}
+  render(data, false);
 }
 
 function fail(err) {
   document.getElementById('status').textContent = 'Error: ' + (err && err.message || err);
 }
 
-function render(data) {
+// A lend or return can fail because the disc moved since the page loaded; show the error, then reload the data.
+function changeFailed(err) {
+  alertBox(err && err.message || err);
+  refresh();
+}
+
+function alertBox(msg) {
+  var box = document.getElementById('notice');
+  box.textContent = msg;
+  box.classList.remove('hidden');
+  setTimeout(function () { box.classList.add('hidden'); }, 6000);
+}
+
+function render(data, stale) {
   state.data = data;
+  state.stale = !!stale;
   document.getElementById('who').textContent = 'Signed in as ' + data.user.name;
   var owners = {};
   data.discs.forEach(function (d) { owners[d.owner] = true; });
@@ -117,7 +153,7 @@ function applyFilters() {
   var shown = state.groups.filter(matches);
   var discCount = shown.reduce(function (n, g) { return n + g.discs.length; }, 0);
   document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles · ' +
-    discCount + ' of ' + state.data.discs.length + ' discs';
+    discCount + ' of ' + state.data.discs.length + ' discs' + (state.stale ? ' · updating…' : '');
   document.getElementById('grid').innerHTML = shown.map(card).join('');
 }
 
@@ -208,12 +244,16 @@ function copyBlock(d) {
 function lend(key) {
   var to = document.getElementById('to-' + key).value;
   busy();
-  google.script.run.withSuccessHandler(render).withFailureHandler(fail).lendDisc(key, to);
+  google.script.run.withSuccessHandler(fresh).withFailureHandler(changeFailed).lendDisc(key, to, discByKey(key).where);
 }
 
 function giveBack(key) {
   busy();
-  google.script.run.withSuccessHandler(render).withFailureHandler(fail).returnDisc(key);
+  google.script.run.withSuccessHandler(fresh).withFailureHandler(changeFailed).returnDisc(key, discByKey(key).where);
+}
+
+function discByKey(key) {
+  return state.data.discs.filter(function (d) { return d.key === key; })[0];
 }
 
 function busy() { document.getElementById('status').textContent = 'Saving…'; }
