@@ -81,7 +81,7 @@ test('fetching TMDB data leaves where_seen alone', () => {
 
 test('a numeric title is not refetched on every run', () => {
   const { ctx } = load({});
-  const meta = { title_seen: 1917, year_seen: 2019, data_json: '{"items":[]}', manual: false };
+  const meta = { title_seen: 1917, year_seen: 2019, data_json: JSON.stringify({ v: ctx.DATA_VERSION, items: [] }), manual: false };
   assert.strictEqual(ctx.isStale_(meta, { title: '1917', yearRaw: '2019' }), false);
   assert.strictEqual(ctx.isStale_(meta, { title: '1917 (4K)', yearRaw: '2019' }), true);
 });

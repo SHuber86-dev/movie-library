@@ -19,6 +19,7 @@ var METADATA_HEADERS = ['id', 'title_seen', 'year_seen', 'tmdb_ids', 'manual', '
 var LOANS_HEADERS = ['id', 'title', 'from', 'to', 'at', 'by', 'note'];
 var USERS_HEADERS = ['email', 'name'];
 var MAX_FETCHES_PER_RUN = 40;
+var DATA_VERSION = 2;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers)
 var CACHE_KEY = 'library';
 var CACHE_SECONDS = 3600; // safety net; lending and sheet changes clear the cache right away
 var WARM_MINUTES = 30;    // warmLibraryCache refills the cache well before it expires
@@ -305,7 +306,12 @@ function isManual_(m) {
 
 /** The sheet turns a title like "1917" into a number, so compare as strings. */
 function isStale_(m, d) {
-  return !m.data_json || (!isManual_(m) && (String(m.title_seen) !== d.title || String(m.year_seen) !== d.yearRaw));
+  return !m.data_json || dataVersion_(m.data_json) !== DATA_VERSION ||
+    (!isManual_(m) && (String(m.title_seen) !== d.title || String(m.year_seen) !== d.yearRaw));
+}
+
+function dataVersion_(json) {
+  try { return JSON.parse(json).v || 1; } catch (e) { return 0; }
 }
 
 function setWhereSeen_(key, where) {
@@ -363,11 +369,11 @@ function buildData_(d, refs) {
     if (p[0] === 'tv') return tvDetails_(+p[1], p[2] ? +p[2] : null);
     return movieDetails_(+p[1]);
   });
-  return { items: items };
+  return { v: DATA_VERSION, items: items };
 }
 
 function movieDetails_(id) {
-  var m = tmdb_('/movie/' + id, { append_to_response: 'credits' });
+  var m = tmdb_('/movie/' + id, { append_to_response: 'credits,videos', include_video_language: videoLanguages_() });
   return {
     kind: 'movie',
     tmdbId: id,
@@ -381,12 +387,13 @@ function movieDetails_(id) {
     poster: m.poster_path || '',
     backdrop: m.backdrop_path || '',
     directors: ((m.credits && m.credits.crew) || []).filter(function (c) { return c.job === 'Director'; }).map(function (c) { return c.name; }),
-    cast: ((m.credits && m.credits.cast) || []).slice(0, 6).map(function (c) { return c.name; })
+    cast: ((m.credits && m.credits.cast) || []).slice(0, 6).map(function (c) { return c.name; }),
+    trailer: pickTrailer((m.videos && m.videos.results) || [])
   };
 }
 
 function tvDetails_(id, season) {
-  var t = tmdb_('/tv/' + id, { append_to_response: 'external_ids,credits' });
+  var t = tmdb_('/tv/' + id, { append_to_response: 'external_ids,credits,videos', include_video_language: videoLanguages_() });
   var s = season ? tmdb_('/tv/' + id + '/season/' + season, {}) : null;
   return {
     kind: 'tv',
@@ -402,8 +409,15 @@ function tvDetails_(id, season) {
     poster: (s && s.poster_path) || t.poster_path || '',
     backdrop: t.backdrop_path || '',
     directors: (t.created_by || []).map(function (c) { return c.name; }),
-    cast: ((t.credits && t.credits.cast) || []).slice(0, 6).map(function (c) { return c.name; })
+    cast: ((t.credits && t.credits.cast) || []).slice(0, 6).map(function (c) { return c.name; }),
+    trailer: pickTrailer((t.videos && t.videos.results) || [])
   };
+}
+
+/** Videos in the app language first, then English and untagged ones. */
+function videoLanguages_() {
+  var lang = (PropertiesService.getScriptProperties().getProperty('LANGUAGE') || 'en-US').split('-')[0];
+  return lang === 'en' ? 'en,null' : lang + ',en,null';
 }
 
 function tmdb_(path, params) {
@@ -497,10 +511,18 @@ function parseCollectionItems(notes) {
   return items.map(function (x) { return prefix && /^the /.test(x) ? prefix + ' ' + x : x; });
 }
 
+/** Picks the best YouTube video id from TMDB's videos list: official trailer, then any trailer, then a teaser. */
+function pickTrailer(videos) {
+  var yt = (videos || []).filter(function (v) { return v.site === 'YouTube' && v.key; });
+  var rank = function (v) { return (v.type === 'Trailer' ? 0 : v.type === 'Teaser' ? 2 : 4) + (v.official ? 0 : 1); };
+  yt = yt.filter(function (v) { return rank(v) < 4; }).sort(function (a, b) { return rank(a) - rank(b); });
+  return yt.length ? yt[0].key : '';
+}
+
 function normalize(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems };
+  module.exports = { pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems };
 }
