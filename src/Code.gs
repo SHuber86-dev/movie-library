@@ -19,6 +19,9 @@ var METADATA_HEADERS = ['id', 'title_seen', 'year_seen', 'tmdb_ids', 'manual', '
 var LOANS_HEADERS = ['id', 'title', 'from', 'to', 'at', 'by', 'note'];
 var USERS_HEADERS = ['email', 'name'];
 var MAX_FETCHES_PER_RUN = 40;
+var CACHE_KEY = 'library';
+var CACHE_SECONDS = 3600; // safety net; lending and sheet changes clear the cache right away
+var CACHE_CHUNK = 90000;  // CacheService values are limited to 100 KB each
 
 // ---------- Web app ----------
 
@@ -33,12 +36,20 @@ function include(name) {
   return HtmlService.createHtmlOutputFromFile(name).getContent();
 }
 
-/** Everything the page needs in one call. */
+/** Everything the page needs in one call. The shared part is cached; the user is looked up per call. */
 function getLibrary() {
+  var shared = readLibraryCache_();
+  if (!shared) {
+    shared = buildLibrary_();
+    writeLibraryCache_(shared);
+  }
+  return { user: currentUser_(), people: shared.people, discs: shared.discs };
+}
+
+function buildLibrary_() {
   var inv = readInventory_();
   var meta = readMetadata_();
   var loans = readTable_(sheet_(LOANS_SHEET, LOANS_HEADERS)).rows;
-  var user = currentUser_();
   var people = {};
   readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.forEach(function (u) { if (u.name) people[u.name] = true; });
 
@@ -62,7 +73,41 @@ function getLibrary() {
     };
   });
 
-  return { user: user, people: Object.keys(people).sort(), discs: discs };
+  return { people: Object.keys(people).sort(), discs: discs };
+}
+
+// ---------- Cache ----------
+
+function readLibraryCache_() {
+  var cache = CacheService.getScriptCache();
+  var count = cache.get(CACHE_KEY + ':n');
+  if (!count) return null;
+  var keys = [];
+  for (var i = 0; i < +count; i++) keys.push(CACHE_KEY + ':' + i);
+  var parts = cache.getAll(keys);
+  var json = '';
+  for (var j = 0; j < keys.length; j++) {
+    if (parts[keys[j]] == null) return null;
+    json += parts[keys[j]];
+  }
+  return JSON.parse(json);
+}
+
+function writeLibraryCache_(data) {
+  var json = JSON.stringify(data);
+  var values = {};
+  var n = 0;
+  for (var i = 0; i < json.length; i += CACHE_CHUNK) values[CACHE_KEY + ':' + n++] = json.slice(i, i + CACHE_CHUNK);
+  values[CACHE_KEY + ':n'] = String(n);
+  try {
+    CacheService.getScriptCache().putAll(values, CACHE_SECONDS);
+  } catch (e) {
+    // Caching is only a speed-up; the page still works without it.
+  }
+}
+
+function clearLibraryCache_() {
+  CacheService.getScriptCache().remove(CACHE_KEY + ':n');
 }
 
 function lendDisc(key, toName) {
@@ -90,6 +135,7 @@ function changeHolder_(key, toName, note) {
     inv.sheet.getRange(row.rowIndex, inv.cols.where + 1).setValue(target);
     sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([key, row.title, holder, target, new Date(), user.name, note]);
     setWhereSeen_(key, target);
+    clearLibraryCache_();
     return getLibrary();
   } finally {
     lock.releaseLock();
@@ -167,6 +213,7 @@ function ensureKeys() {
 
 /** Fetches TMDB data for new or changed rows and logs manual "where?" edits. Run by triggers. */
 function refreshMetadata() {
+  clearLibraryCache_(); // the sheet may have just been edited
   ensureKeys();
   var inv = readInventory_();
   var msh = sheet_(METADATA_SHEET, METADATA_HEADERS);
@@ -205,6 +252,7 @@ function refreshMetadata() {
     if (entry) msh.getRange(entry.rowIndex, 1, 1, record.length).setValues([record]);
     else { msh.appendRow(record); byKey[d.key] = { row: {}, rowIndex: msh.getLastRow() }; }
   });
+  clearLibraryCache_(); // new metadata and logged edits are in the sheet now
 }
 
 function setWhereSeen_(key, where) {

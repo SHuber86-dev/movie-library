@@ -126,7 +126,9 @@ function card(g) {
   var item = g.items[0];
   var out = g.discs.some(function (x) { return x.where !== x.owner; });
   var poster = item && item.poster
-    ? '<img loading="lazy" class="poster w-full object-cover" src="' + IMG + 'w342' + esc(item.poster) + '" alt="">'
+    ? '<img loading="lazy" decoding="async" class="poster w-full object-cover" src="' + IMG + 'w185' + esc(item.poster) + '"' +
+      ' srcset="' + IMG + 'w185' + esc(item.poster) + ' 185w, ' + IMG + 'w342' + esc(item.poster) + ' 342w"' +
+      ' sizes="(min-width: 1024px) 16vw, (min-width: 768px) 25vw, (min-width: 640px) 33vw, 50vw" alt="">'
     : '<div class="poster w-full flex items-center justify-center p-3 text-center text-sm text-gray-400 bg-white/5">' + esc(d.title) + '</div>';
   return '<button class="text-left group" onclick="openGroup(\'' + esc(g.key) + '\')">' +
     '<div class="relative rounded-lg overflow-hidden ring-1 ring-white/10 group-hover:ring-white/40 transition">' + poster +
@@ -149,7 +151,7 @@ function openGroup(key) {
   if (!g) return closeModal();
   state.openKey = key;
   var first = g.items[0];
-  var backdrop = first && first.backdrop ? '<img class="w-full h-48 sm:h-64 object-cover opacity-70" src="' + IMG + 'w1280' + esc(first.backdrop) + '" alt="">' : '';
+  var backdrop = first && first.backdrop ? '<img decoding="async" class="w-full h-48 sm:h-64 object-cover opacity-70" src="' + IMG + 'w780' + esc(first.backdrop) + '" alt="">' : '';
   var films = g.items.length ? g.items.map(itemBlock).join('') :
     '<p class="text-sm text-gray-400">No movie data yet. It is fetched automatically within the hour.</p>';
   document.getElementById('detail').innerHTML =
@@ -169,7 +171,7 @@ function itemBlock(i) {
   var links = (i.imdbId ? '<a class="underline" target="_blank" href="https://www.imdb.com/title/' + esc(i.imdbId) + '/">IMDb</a> · ' : '') +
     '<a class="underline" target="_blank" href="https://www.themoviedb.org/' + esc(i.kind) + '/' + esc(i.tmdbId) + '">TMDB</a>';
   return '<div class="flex gap-4">' +
-    (i.poster ? '<img class="w-24 rounded hidden sm:block self-start" src="' + IMG + 'w185' + esc(i.poster) + '" alt="">' : '') +
+    (i.poster ? '<img loading="lazy" decoding="async" class="w-24 rounded hidden sm:block self-start" src="' + IMG + 'w185' + esc(i.poster) + '" alt="">' : '') +
     '<div class="space-y-1 text-sm">' +
       '<div class="font-medium text-base">' + esc(i.title) + '</div>' +
       '<div class="text-gray-400">' + esc(facts) + '</div>' +
