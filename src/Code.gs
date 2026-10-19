@@ -1,5 +1,6 @@
 /**
- * Movie Library: Google Apps Script web app bound to the "BluRay inventory" sheet.
+ * Movie Library: Google Apps Script bound to the "BluRay inventory" sheet. It serves a small JSON API
+ * (doPost) for the page hosted on GitHub Pages, which signs people in with Google.
  *
  * The inventory tab stays the source of truth. The script adds:
  *   - a hidden key column ("id") in the inventory tab, so rows can be sorted safely
@@ -25,36 +26,110 @@ var CACHE_SECONDS = 3600; // safety net; lending and sheet changes clear the cac
 var WARM_MINUTES = 30;    // warmLibraryCache refills the cache well before it expires
 var CACHE_CHUNK = 90000;  // CacheService values are limited to 100 KB each
 
-// ---------- Web app ----------
+// ---------- Web app (JSON API for the page on GitHub Pages) ----------
 
+// The OAuth client the page signs in with. ID tokens for any other client are refused.
+var CLIENT_ID = '1037650089841-ob1jsnl3mdtgiicenup02ckc80tsmfsi.apps.googleusercontent.com';
+var ACCESS_SECONDS = 600; // how long the list of people with access is cached
+
+/** Health check, so opening the /exec URL in a browser shows that the API is up. */
 function doGet() {
-  var page = HtmlService.createTemplateFromFile('index');
-  // Build the library into the page when the cache is warm, saving a round trip.
-  // On a cold cache the page loads at once and fetches the data itself.
-  var shared = readLibraryCache_();
-  page.initialJson = shared ? embedJson_({ user: currentUser_(), people: shared.people, discs: shared.discs }) : 'null';
-  return page.evaluate()
-    .setTitle('Movie Library')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  return json_({ ok: true, app: 'movie-library' });
 }
 
-/** JSON that is safe to place inside a <script> tag. */
-function embedJson_(data) {
-  return JSON.stringify(data).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+/**
+ * Every request is a POST with a text/plain JSON body (no CORS preflight):
+ *   { action: 'library' | 'lend' | 'return', token: <Google ID token>, key, to, seenWhere }
+ * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
+ */
+function doPost(e) {
+  var req;
+  try {
+    req = JSON.parse(e.postData.contents);
+  } catch (err) {
+    return json_({ ok: false, code: 'error', error: 'Bad request.' });
+  }
+  try {
+    var email = verifyIdToken_(req.token);
+    if (!hasAccess_(email)) {
+      return json_({ ok: false, code: 'denied', error: email + ' has no access to this library. Ask the owner to share the sheet with you.' });
+    }
+    var user = currentUser_(email);
+    if (req.action === 'library') return json_({ ok: true, data: getLibrary_(user) });
+    if (req.action === 'lend') return json_({ ok: true, data: lendDisc(req.key, req.to, req.seenWhere, user) });
+    if (req.action === 'return') return json_({ ok: true, data: returnDisc(req.key, req.seenWhere, user) });
+    return json_({ ok: false, code: 'error', error: 'Unknown action.' });
+  } catch (err) {
+    return json_({ ok: false, code: err.code || 'error', error: String(err.message || err) });
+  }
 }
 
-function include(name) {
-  return HtmlService.createHtmlOutputFromFile(name).getContent();
+function json_(data) {
+  return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// ---------- Sign-in ----------
+
+/** Checks a Google ID token with Google and returns its email. Verified tokens are cached until they expire. */
+function verifyIdToken_(token) {
+  if (!token) throw signInError_('Please sign in.');
+  var cache = CacheService.getScriptCache();
+  var key = 'tok:' + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, token));
+  var hit = cache.get(key);
+  if (hit) return hit;
+  var res = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(token), { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw signInError_('Your sign-in has expired. Please sign in again.');
+  var info = JSON.parse(res.getContentText());
+  var email = checkTokenInfo(info, CLIENT_ID, Date.now());
+  var ttl = Math.min(21600, Math.floor(+info.exp - Date.now() / 1000) - 60);
+  if (ttl > 0) cache.put(key, email, ttl);
+  return email;
+}
+
+/** Validates Google's tokeninfo answer: our client, issued by Google, a verified email, not expired. */
+function checkTokenInfo(info, clientId, nowMs) {
+  if (!info || info.aud !== clientId) throw signInError_('This sign-in is for a different app.');
+  if (info.iss !== 'accounts.google.com' && info.iss !== 'https://accounts.google.com') throw signInError_('Sign-in not issued by Google.');
+  if (String(info.email_verified) !== 'true' || !info.email) throw signInError_('Your Google email is not verified.');
+  if (!(+info.exp * 1000 > nowMs)) throw signInError_('Your sign-in has expired. Please sign in again.');
+  return String(info.email).toLowerCase();
+}
+
+function signInError_(message) {
+  var e = new Error(message);
+  e.code = 'signin';
+  return e;
+}
+
+/** People the sheet is shared with, plus everyone in the Users tab. A miss rereads the list, so new shares work at once. */
+function hasAccess_(email) {
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get('access');
+  if (cached && JSON.parse(cached).indexOf(email) >= 0) return true;
+  var list = accessList_();
+  cache.put('access', JSON.stringify(list), ACCESS_SECONDS);
+  return list.indexOf(email) >= 0;
+}
+
+function accessList_() {
+  var emails = readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.map(function (u) { return u.email; });
+  try {
+    var ss = SpreadsheetApp.getActive();
+    ss.getEditors().concat(ss.getViewers()).forEach(function (u) { emails.push(u.getEmail()); });
+  } catch (e) {
+    // Without the sharing list, the Users tab alone decides.
+  }
+  return emails.map(function (x) { return String(x || '').trim().toLowerCase(); }).filter(Boolean);
 }
 
 /** Everything the page needs in one call. The shared part is cached; the user is looked up per call. */
-function getLibrary() {
+function getLibrary_(user) {
   var shared = readLibraryCache_();
   if (!shared) {
     shared = buildLibrary_();
     writeLibraryCache_(shared);
   }
-  return { user: currentUser_(), people: shared.people, discs: shared.discs };
+  return { user: user, people: shared.people, discs: shared.discs };
 }
 
 function buildLibrary_() {
@@ -122,22 +197,21 @@ function clearLibraryCache_() {
 }
 
 /** seenWhere is where the page showed the disc; if the sheet now says otherwise, nothing is written. */
-function lendDisc(key, toName, seenWhere) {
-  return changeHolder_(key, toName, 'lent', seenWhere);
+function lendDisc(key, toName, seenWhere, user) {
+  return changeHolder_(key, toName, 'lent', seenWhere, user);
 }
 
-function returnDisc(key, seenWhere) {
-  return changeHolder_(key, null, 'returned', seenWhere);
+function returnDisc(key, seenWhere, user) {
+  return changeHolder_(key, null, 'returned', seenWhere, user);
 }
 
-function changeHolder_(key, toName, note, seenWhere) {
+function changeHolder_(key, toName, note, seenWhere, user) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
     var inv = readInventory_();
     var row = inv.rows.filter(function (r) { return r.key === key; })[0];
     if (!row) throw new Error('Disc not found. Reload the page.');
-    var user = currentUser_();
     var holder = row.where || row.owner;
     if (seenWhere && seenWhere !== holder) {
       clearLibraryCache_();
@@ -147,19 +221,19 @@ function changeHolder_(key, toName, note, seenWhere) {
       throw new Error('Only ' + row.owner + ' or ' + holder + ' can change where this disc is.');
     }
     var target = toName || row.owner;
-    if (target === holder) return getLibrary();
+    if (target === holder) return getLibrary_(user);
     inv.sheet.getRange(row.rowIndex, inv.cols.where + 1).setValue(target);
     sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([key, row.title, holder, target, new Date(), user.name, note]);
     setWhereSeen_(key, target);
     clearLibraryCache_();
-    return getLibrary();
+    return getLibrary_(user);
   } finally {
     lock.releaseLock();
   }
 }
 
-function currentUser_() {
-  var email = (Session.getActiveUser().getEmail() || '').toLowerCase();
+/** The signed-in person's display name comes from the Users tab. */
+function currentUser_(email) {
   var match = readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.filter(function (u) {
     return String(u.email).toLowerCase() === email;
   })[0];
@@ -524,5 +598,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems };
 }

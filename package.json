@@ -1,7 +1,7 @@
 {
   "name": "movie-library",
   "private": true,
-  "description": "Shared Blu-ray library: a Google Apps Script web app on top of a Google Sheet",
+  "description": "Shared Blu-ray library: a GitHub Pages site backed by a Google Apps Script API on a Google Sheet",
   "scripts": {
     "test": "node --test test/*.test.js",
     "push": "clasp push",

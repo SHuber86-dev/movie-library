@@ -2,15 +2,17 @@
 
 Private Movie Library: a web app for a group of friends to browse their shared Blu-ray collection, with posters and movie details from TMDB, and to track who owns each disc and who has it right now.
 
-It runs as a **Google Apps Script web app** bound to the "BluRay inventory" Google Sheet. The sheet stays the source of truth, and friends sign in with their Google account.
+The page is hosted on **GitHub Pages** at <https://shuber86-dev.github.io/movie-library/>. Behind it, a small **Google Apps Script** API bound to the "BluRay inventory" Google Sheet reads and writes the sheet. The sheet stays the source of truth, and friends sign in with their Google account.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `src/Code.gs` | Server: reads the sheet, keeps row keys, fetches TMDB metadata, handles lending |
-| `src/index.html` | The web page: poster grid, filters, details, lend and return |
-| `src/appsscript.json` | Manifest (runs as the signed-in user, open to Google accounts) |
+| `src/Code.gs` | API: checks the Google sign-in, reads the sheet, keeps row keys, fetches TMDB metadata, handles lending |
+| `src/appsscript.json` | Manifest (runs as the owner; the script checks every caller's sign-in itself) |
+| `web/index.html` | The web page: Google sign-in, poster grid, filters, details, lend and return |
+| `web/config.js` | The OAuth Client ID and the Apps Script `/exec` URL the page uses |
+| `.github/workflows/pages.yml` | Runs the tests and publishes `web/` to GitHub Pages on every push to `main` |
 | `docs/SETUP.md` | Step-by-step install guide |
 | `docs/DESCRIPTION.md` | Short description of the app |
 | `docs/PLAN.md` | Design and data model |
@@ -29,7 +31,7 @@ cp .clasp.json.example .clasp.json   # then put in your script id (Apps Script �
 npm run push                          # uploads src/ to the Apps Script project
 ```
 
-After pushing, update the web app deployment (Deploy → Manage deployments → New version) so the URL serves the new code.
+After pushing, update the web app deployment (Deploy → Manage deployments → New version) so the URL serves the new code. The page in `web/` is published by GitHub Actions when it lands on `main`.
 
 ## Secrets
 
