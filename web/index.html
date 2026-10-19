@@ -1,9 +1,12 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <base target="_top">
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Movie Library</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
   <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="config.js"></script>
   <style>
     body { background: #0f1115; }
     .poster { aspect-ratio: 2 / 3; }
@@ -26,6 +29,7 @@
     <div class="max-w-7xl mx-auto px-4 py-2 sm:py-3 flex flex-wrap gap-2 items-center">
       <h1 class="text-lg font-semibold mr-auto">🎬 Movie Library</h1>
       <span id="who" class="text-sm text-gray-400"></span>
+      <div id="signin" class="hidden"></div>
     </div>
     <div id="filters" class="max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-4 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
       <input id="q" placeholder="Search title, cast, director…" class="col-span-4 sm:flex-1 sm:min-w-[12rem] bg-white/5 rounded px-3 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
@@ -60,8 +64,10 @@
 <script>
 var IMG = 'https://image.tmdb.org/t/p/';
 var STORE_KEY = 'movie-library:v1';
-var INITIAL = <?!= initialJson ?>;
+var TOKEN_KEY = 'movie-library:token';
+var CONFIG = window.MOVIE_LIBRARY_CONFIG || {};
 var state = { data: null, groups: [] };
+var auth = { token: null, exp: 0, waiting: [], gis: false };
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -69,22 +75,104 @@ function esc(s) {
   });
 }
 
-// Data comes from the page itself (warm cache) or from this browser's last copy, shown at once.
-// Either way the sheet is asked again in the background; lending always checks the sheet first.
+// ---------- Sign-in ----------
+// Google Identity Services gives the page an ID token (valid for an hour), which is sent with every request.
+// The Apps Script API checks it and only answers people the sheet is shared with.
+
+function initSignIn() {
+  google.accounts.id.initialize({
+    client_id: CONFIG.clientId,
+    callback: signedIn,
+    auto_select: true,
+    cancel_on_tap_outside: false,
+    use_fedcm_for_prompt: true
+  });
+  google.accounts.id.renderButton(document.getElementById('signin'), { theme: 'filled_black', size: 'medium', shape: 'pill', text: 'signin' });
+  auth.gis = true;
+  if (auth.waiting.length) google.accounts.id.prompt();
+}
+
+function signedIn(resp) {
+  auth.token = resp.credential;
+  auth.exp = jwtPayload(resp.credential).exp;
+  try { localStorage.setItem(TOKEN_KEY, JSON.stringify({ token: auth.token, exp: auth.exp })); } catch (e) {}
+  document.getElementById('signin').classList.add('hidden');
+  var waiting = auth.waiting;
+  auth.waiting = [];
+  waiting.forEach(function (resolve) { resolve(auth.token); });
+}
+
+function jwtPayload(jwt) {
+  var b64 = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(decodeURIComponent(escape(atob(b64))));
+}
+
+function tokenValid() {
+  return auth.token && auth.exp * 1000 > Date.now() + 60000;
+}
+
+// Resolves with a fresh token, asking Google for one (silently when possible) if needed.
+function getToken() {
+  if (tokenValid()) return Promise.resolve(auth.token);
+  forgetToken();
+  return new Promise(function (resolve) {
+    auth.waiting.push(resolve);
+    if (auth.waiting.length > 1) return;
+    document.getElementById('signin').classList.remove('hidden');
+    if (!state.data) document.getElementById('status').textContent = 'Sign in with your Google account to see the library.';
+    if (auth.gis) google.accounts.id.prompt();
+  });
+}
+
+function forgetToken() {
+  auth.token = null;
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+}
+
+function signOut() {
+  forgetToken();
+  try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+  if (auth.gis) google.accounts.id.disableAutoSelect();
+  location.reload();
+}
+
+// Every call is a POST with a plain-text JSON body, so the browser sends it without a CORS preflight.
+function api(action, params, retried) {
+  if (!CONFIG.apiUrl || !/^https:/.test(CONFIG.apiUrl)) return Promise.reject(new Error('Set apiUrl in config.js to the Apps Script /exec URL.'));
+  return getToken().then(function (token) {
+    var body = Object.assign({ action: action, token: token }, params || {});
+    return fetch(CONFIG.apiUrl, { method: 'POST', body: JSON.stringify(body) });
+  }).then(function (res) {
+    if (!res.ok) throw new Error('The server answered ' + res.status + '. Please try again.');
+    return res.json();
+  }).then(function (res) {
+    if (res.ok) return res.data;
+    if (res.code === 'signin' && !retried) {
+      forgetToken();
+      return api(action, params, true);
+    }
+    var err = new Error(res.error);
+    err.code = res.code;
+    throw err;
+  });
+}
+
+// ---------- Data ----------
+
+// This browser's last copy is shown at once while the sheet is asked again; lending always checks the sheet first.
 function load() {
+  try {
+    var t = JSON.parse(localStorage.getItem(TOKEN_KEY));
+    if (t) { auth.token = t.token; auth.exp = t.exp; }
+  } catch (e) {}
   var saved = null;
-  if (!INITIAL) {
-    try { saved = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
-  }
-  if (INITIAL) fresh(INITIAL);
-  else {
-    if (saved) render(saved, true);
-    refresh();
-  }
+  try { saved = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
+  if (saved) render(saved, true);
+  refresh();
 }
 
 function refresh() {
-  google.script.run.withSuccessHandler(fresh).withFailureHandler(fail).getLibrary();
+  api('library').then(fresh, fail);
 }
 
 function fresh(data) {
@@ -93,7 +181,12 @@ function fresh(data) {
 }
 
 function fail(err) {
-  document.getElementById('status').textContent = 'Error: ' + (err && err.message || err);
+  var status = document.getElementById('status');
+  status.textContent = 'Error: ' + (err && err.message || err);
+  if (err && err.code === 'denied') {
+    status.insertAdjacentHTML('beforeend', ' <button class="underline" onclick="signOut()">Use another account</button>');
+    document.getElementById('grid').innerHTML = '';
+  }
 }
 
 // A lend or return can fail because the disc moved since the page loaded; show the error, then reload the data.
@@ -112,7 +205,8 @@ function alertBox(msg) {
 function render(data, stale) {
   state.data = data;
   state.stale = !!stale;
-  document.getElementById('who').textContent = 'Signed in as ' + data.user.name;
+  document.getElementById('who').innerHTML = 'Signed in as ' + esc(data.user.name) +
+    ' · <button class="underline hover:text-gray-200" onclick="signOut()">Sign out</button>';
   var owners = {};
   data.discs.forEach(function (d) { owners[d.owner] = true; });
   var sel = document.getElementById('fOwner');
@@ -277,12 +371,12 @@ function copyBlock(d) {
 function lend(key) {
   var to = document.getElementById('to-' + key).value;
   busy();
-  google.script.run.withSuccessHandler(fresh).withFailureHandler(changeFailed).lendDisc(key, to, discByKey(key).where);
+  api('lend', { key: key, to: to, seenWhere: discByKey(key).where }).then(fresh, changeFailed);
 }
 
 function giveBack(key) {
   busy();
-  google.script.run.withSuccessHandler(fresh).withFailureHandler(changeFailed).returnDisc(key, discByKey(key).where);
+  api('return', { key: key, seenWhere: discByKey(key).where }).then(fresh, changeFailed);
 }
 
 function discByKey(key) {
@@ -303,5 +397,6 @@ function closeModal() {
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
 load();
 </script>
+<script src="https://accounts.google.com/gsi/client" async onload="initSignIn()"></script>
 </body>
 </html>

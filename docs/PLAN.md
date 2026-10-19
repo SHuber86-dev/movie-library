@@ -9,8 +9,8 @@ A web app where friends browse the shared Blu-ray collection with covers, plots 
 | Layer | Choice |
 |---|---|
 | Data | The **BluRay inventory** Google Sheet itself, plus two helper tabs the app manages |
-| Backend | Google Apps Script attached to the sheet (`doGet` + server functions) |
-| Frontend | A single-page app served by Apps Script's HtmlService (plain JS or Alpine.js, Tailwind via CDN) |
+| Backend | Google Apps Script attached to the sheet, deployed as a JSON API (`doPost`); it verifies the caller's Google ID token |
+| Frontend | A single static page on GitHub Pages (plain JS, Tailwind via CDN, Google Identity Services sign-in) |
 | Login | Google sign-in, built in. Deployed as "Execute as: user accessing the web app" |
 | Hosting | Google, on Steffen's account, at a `script.google.com/macros/s/…/exec` URL |
 | Metadata | TMDB API called from the script (`UrlFetchApp`), cached in a sheet tab |
