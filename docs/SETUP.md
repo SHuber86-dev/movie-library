@@ -24,7 +24,7 @@ The app has two parts: the **page** at `https://shuber86-dev.github.io/movie-lib
 2. Google asks for permission. Click **Advanced → Go to Movie Library (unsafe)**. That's expected for your own, unpublished script.
 3. Setup:
    - adds a hidden `id` column to your inventory tab,
-   - creates the `Metadata`, `Loans` and `Users` tabs,
+   - creates the `Metadata`, `Loans`, `Users`, `Household` and `Seen` tabs,
    - installs an hourly trigger, an on-change trigger and a 30-minute trigger that keeps the app fast,
    - fetches metadata for the first 40 discs.
 
@@ -56,5 +56,6 @@ Open the **Metadata** tab. Rows with `no match` in the `error` column, or with t
 ## Day-to-day
 - **Add, edit or remove discs in the sheet as usual.** The app shows changes on reload, and posters and plots for new rows appear within the hour.
 - **Lending in the app** updates the `where?` column and logs the change in `Loans`. If you edit `where?` by hand, that's logged too, marked "edited in sheet".
+- **Seen by:** each person can add their household (kids, a partner) under **Household** in the app, then tick who has seen a movie in its details. This is stored in the `Household` and `Seen` tabs, which the app creates on first use.
 - **After changing `Code.gs`**, go to **Deploy → Manage deployments → ✎ → Version: New version → Deploy**. The URL stays the same, so `config.js` needs no change.
 - **After changing the page** (`web/`), merging to `main` republishes it automatically.

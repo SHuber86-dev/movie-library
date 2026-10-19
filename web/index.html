@@ -28,6 +28,7 @@
   <header class="sticky top-0 z-10 bg-[#0f1115]/95 backdrop-blur border-b border-white/10">
     <div class="max-w-7xl mx-auto px-4 py-2 sm:py-3 flex flex-wrap gap-2 items-center">
       <h1 class="text-lg font-semibold mr-auto">🎬 Movie Library</h1>
+      <button id="householdBtn" class="hidden text-sm text-gray-400 underline hover:text-gray-200" onclick="openHousehold()">Household</button>
       <span id="who" class="text-sm text-gray-400"></span>
       <div id="signin" class="hidden"></div>
     </div>
@@ -43,6 +44,7 @@
       <select id="fType" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
         <option value="">All types</option><option>Film</option><option>Film collection</option><option value="TV">TV</option>
       </select>
+      <select id="fSeen" class="col-span-4 min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">Seen or not</option></select>
     </div>
   </header>
 
@@ -215,6 +217,14 @@ function render(data, stale) {
     return '<option>' + esc(o) + '</option>';
   }).join('');
   sel.value = current;
+  var seenSel = document.getElementById('fSeen');
+  var seenCurrent = seenSel.value;
+  seenSel.innerHTML = '<option value="">Seen or not</option>' + viewers().map(function (p) {
+    return '<option value="not:' + esc(p) + '">Not seen by ' + esc(p) + '</option><option value="by:' + esc(p) + '">Seen by ' + esc(p) + '</option>';
+  }).join('');
+  seenSel.value = seenCurrent;
+  if (seenSel.value !== seenCurrent) seenSel.value = '';
+  document.getElementById('householdBtn').classList.remove('hidden');
   markSetFilters();
 
   // One card per movie: discs matched to the same single TMDB movie are grouped together.
@@ -229,7 +239,8 @@ function render(data, stale) {
   });
   state.groups.sort(function (a, b) { return sortTitle(a.discs[0].title).localeCompare(sortTitle(b.discs[0].title)); });
   applyFilters();
-  if (state.openKey) openGroup(state.openKey);
+  if (state.openKey === HOUSEHOLD) openHousehold();
+  else if (state.openKey) openGroup(state.openKey);
 }
 
 // "The Matrix" sorts under M.
@@ -254,6 +265,11 @@ function matches(g) {
     return true;
   });
   if (!discs.length) return false;
+  var seen = document.getElementById('fSeen').value;
+  if (seen) {
+    var person = seen.slice(seen.indexOf(':') + 1);
+    if (groupSeenBy(g, person) !== (seen.indexOf('by:') === 0)) return false;
+  }
   if (!q) return true;
   var hay = [g.discs[0].title, g.discs[0].notes].concat(g.items.map(function (i) {
     return [i.title, (i.cast || []).join(' '), (i.directors || []).join(' '), (i.genres || []).join(' ')].join(' ');
@@ -263,7 +279,7 @@ function matches(g) {
 
 // Highlights dropdowns that are set to something other than their first ("All …") option.
 function markSetFilters() {
-  ['fOwner', 'fStatus', 'fFormat', 'fType'].forEach(function (id) {
+  ['fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen'].forEach(function (id) {
     var el = document.getElementById(id);
     el.classList.toggle('is-set', el.value !== '');
   });
@@ -290,6 +306,7 @@ function card(g) {
     '<div class="relative rounded-lg overflow-hidden ring-1 ring-white/10 group-hover:ring-white/40 transition">' + poster +
       (g.items.length > 1 ? '<span class="absolute top-2 left-2 text-xs bg-black/70 rounded px-1.5 py-0.5">' + g.items.length + ' films</span>' : '') +
       (out ? '<span class="absolute top-2 right-2 text-xs bg-amber-500 text-black rounded px-1.5 py-0.5">lent</span>' : '') +
+      (groupSeenBy(g, state.data.user.name) ? '<span class="absolute bottom-2 left-2 text-xs bg-emerald-600 rounded px-1.5 py-0.5">✓ seen</span>' : '') +
     '</div>' +
     '<div class="mt-1 sm:mt-1.5 text-xs sm:text-sm font-medium leading-tight line-clamp-2">' + esc(d.title) + '</div>' +
     '<div class="text-[11px] sm:text-xs text-gray-400 truncate">' + esc(d.years[0] || '') + ' · ' + esc(formatBadges(g.discs)) + '</div>' +
@@ -308,8 +325,9 @@ function openGroup(key) {
   state.openKey = key;
   var first = g.items[0];
   var backdrop = first && first.backdrop ? '<img decoding="async" class="w-full h-48 sm:h-64 object-cover opacity-70" src="' + IMG + 'w780' + esc(first.backdrop) + '" alt="">' : '';
-  var films = g.items.length ? g.items.map(itemBlock).join('') :
-    '<p class="text-sm text-gray-400">No movie data yet. It is fetched automatically within the hour.</p>';
+  var films = g.items.length ? g.items.map(function (i) { return itemBlock(i, g); }).join('') :
+    '<p class="text-sm text-gray-400">No movie data yet. It is fetched automatically within the hour.</p>' +
+    seenRow(seenKey(null, g), g.discs[0].title);
   document.getElementById('detail').innerHTML =
     '<div class="relative">' + backdrop +
       '<button onclick="closeModal()" class="absolute top-3 right-3 bg-black/60 rounded-full w-8 h-8">✕</button></div>' +
@@ -321,7 +339,7 @@ function openGroup(key) {
   document.getElementById('modal').classList.remove('hidden');
 }
 
-function itemBlock(i) {
+function itemBlock(i, g) {
   var facts = [i.year, i.runtime ? i.runtime + ' min' : '', i.episodes ? i.episodes + ' episodes' : '', (i.genres || []).join(', '),
     i.rating ? '★ ' + i.rating + ' TMDB' : ''].filter(Boolean).join(' · ');
   var links = (i.imdbId ? '<a class="underline" target="_blank" href="https://www.imdb.com/title/' + esc(i.imdbId) + '/">IMDb</a> · ' : '') +
@@ -336,7 +354,126 @@ function itemBlock(i) {
       (i.directors && i.directors.length ? '<div class="text-gray-400">By ' + esc(i.directors.join(', ')) + '</div>' : '') +
       (i.cast && i.cast.length ? '<div class="text-gray-400">With ' + esc(i.cast.join(', ')) + '</div>' : '') +
       '<div class="text-gray-400">' + links + '</div>' +
+      seenRow(seenKey(i, g), i.title) +
     '</div></div>';
+}
+
+// ---------- Seen ----------
+// Each person ticks themselves and their household (kids, a partner: plain names, not app users).
+// A film is keyed by its TMDB id, so a film counts as seen on every disc it is on, collections included.
+// TV seasons share a TMDB id, so they, and discs without movie data, are keyed by the disc.
+
+var HOUSEHOLD = '#household';
+var seenQueue = Promise.resolve();
+var seenPending = 0;
+
+function viewers() {
+  return [state.data.user.name].concat(state.data.household || []);
+}
+
+function seenKey(item, g) {
+  return item && item.kind === 'movie' ? 'movie:' + item.tmdbId : 'disc:' + g.discs[0].key;
+}
+
+function groupKeys(g) {
+  return g.items.length ? g.items.map(function (i) { return seenKey(i, g); }) : [seenKey(null, g)];
+}
+
+function isSeen(key, person) {
+  return ((state.data.seen || {})[key] || []).indexOf(person) >= 0;
+}
+
+// A collection counts as seen once every film in it is.
+function groupSeenBy(g, person) {
+  return groupKeys(g).every(function (k) { return isSeen(k, person); });
+}
+
+function seenRow(key, title) {
+  var chips = viewers().map(function (p) {
+    var on = isSeen(key, p);
+    return '<button data-seen-key="' + esc(key) + '" data-person="' + esc(p) + '" data-title="' + esc(title) + '" aria-pressed="' + on + '"' +
+      ' class="rounded-full px-2.5 py-0.5 text-xs ' + (on ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-white/10 hover:bg-white/20 text-gray-300') + '">' +
+      (on ? '✓ ' : '') + esc(p) + '</button>';
+  }).join('');
+  return '<div class="flex flex-wrap items-center gap-1.5 pt-1"><span class="text-gray-400 mr-1">Seen by</span>' + chips +
+    '<button class="text-xs text-gray-400 underline hover:text-gray-200 ml-1" onclick="openHousehold()">' +
+      (state.data.household && state.data.household.length ? 'Edit household' : '+ Add kids or family') + '</button></div>';
+}
+
+// The tick shows at once; the saves go out one after another so a later click is never undone by an earlier answer.
+function toggleSeen(key, person, title) {
+  var seen = state.data.seen = state.data.seen || {};
+  var list = seen[key] = (seen[key] || []).slice();
+  var on = list.indexOf(person) < 0;
+  if (on) list.push(person); else list.splice(list.indexOf(person), 1);
+  redraw();
+  seenPending++;
+  seenQueue = seenQueue.then(function () {
+    return api('seen', { movie: key, title: title, person: person, seen: on });
+  }).then(function (data) {
+    if (--seenPending === 0) fresh(data);
+  }, function (err) {
+    seenPending--;
+    changeFailed(err);
+  });
+}
+
+function redraw() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state.data)); } catch (e) {}
+  applyFilters();
+  if (state.openKey === HOUSEHOLD) openHousehold();
+  else if (state.openKey) openGroup(state.openKey);
+}
+
+// ---------- Household ----------
+
+function openHousehold() {
+  if (state.openKey !== HOUSEHOLD) state.backKey = state.openKey;
+  state.openKey = HOUSEHOLD;
+  var names = state.data.household || [];
+  var list = names.length ? names.map(function (n, i) {
+    return '<li class="flex items-center justify-between bg-white/5 rounded px-3 py-2"><span>' + esc(n) + '</span>' +
+      '<button class="text-xs text-gray-400 underline hover:text-gray-200" onclick="removeMember(' + i + ')">Remove</button></li>';
+  }).join('') : '<li class="text-gray-400">Nobody yet.</li>';
+  document.getElementById('detail').innerHTML =
+    '<div class="p-5 space-y-4 text-sm">' +
+      '<div class="flex items-center"><h2 class="text-xl font-semibold mr-auto">Your household</h2>' +
+        '<button onclick="closeHousehold()" class="bg-white/10 rounded-full w-8 h-8">✕</button></div>' +
+      '<p class="text-gray-400">Add the people you watch with, like your kids. They don\'t need an account: ' +
+        'you tick them on a movie to mark that they have seen it. Only you see your household and its ticks.</p>' +
+      '<ul class="space-y-1.5">' + list + '</ul>' +
+      '<form class="flex gap-2" onsubmit="addMember(event)">' +
+        '<input id="newMember" maxlength="40" placeholder="Name, e.g. Mia" class="flex-1 bg-white/5 rounded px-3 py-1.5 outline-none focus:ring-1 ring-white/30">' +
+        '<button class="bg-white/10 hover:bg-white/20 rounded px-3 py-1.5">Add</button></form>' +
+      '<div class="text-right"><button onclick="closeHousehold()" class="bg-emerald-600 hover:bg-emerald-500 rounded px-4 py-1.5">Done</button></div>' +
+    '</div>';
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function closeHousehold() {
+  var back = state.backKey;
+  state.backKey = null;
+  if (back) openGroup(back); else closeModal();
+}
+
+function addMember(e) {
+  e.preventDefault();
+  var name = document.getElementById('newMember').value.replace(/\s+/g, ' ').trim();
+  if (!name) return;
+  saveHousehold((state.data.household || []).concat([name]));
+}
+
+function removeMember(i) {
+  var names = (state.data.household || []).slice();
+  names.splice(i, 1);
+  saveHousehold(names);
+}
+
+function saveHousehold(names) {
+  state.data.household = names;
+  redraw();
+  busy();
+  api('household', { names: names }).then(fresh, changeFailed);
 }
 
 // The trailer TMDB lists, or a YouTube search when it lists none.
@@ -387,12 +524,17 @@ function busy() { document.getElementById('status').textContent = 'Saving…'; }
 
 function closeModal() {
   state.openKey = null;
+  state.backKey = null;
   document.getElementById('modal').classList.add('hidden');
 }
 
-['q', 'fOwner', 'fStatus', 'fFormat', 'fType'].forEach(function (id) {
+['q', 'fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen'].forEach(function (id) {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('input', markSetFilters);
+});
+document.getElementById('detail').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-seen-key]');
+  if (b) toggleSeen(b.dataset.seenKey, b.dataset.person, b.dataset.title);
 });
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
 load();
