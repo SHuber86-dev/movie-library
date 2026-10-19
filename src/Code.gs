@@ -7,6 +7,8 @@
  *   - "Metadata": TMDB data cached per disc (edit tmdb_ids + set manual=TRUE to fix a match)
  *   - "Loans":    append-only lending history
  *   - "Users":    email -> display name mapping for sign-in
+ *   - "Household": the people each user marks movies for (their kids, a partner), as plain names
+ *   - "Seen":      who has seen which movie, one row per person and movie
  *
  * Script properties: TMDB_TOKEN (TMDB "API Read Access Token"), LANGUAGE (e.g. en-US, de-DE).
  */
@@ -19,6 +21,11 @@ var KEY_HEADER = 'id';
 var METADATA_HEADERS = ['id', 'title_seen', 'year_seen', 'tmdb_ids', 'manual', 'data_json', 'fetched_at', 'where_seen', 'error'];
 var LOANS_HEADERS = ['id', 'title', 'from', 'to', 'at', 'by', 'note'];
 var USERS_HEADERS = ['email', 'name'];
+var HOUSEHOLD_SHEET = 'Household';
+var HOUSEHOLD_HEADERS = ['email', 'name'];
+var SEEN_SHEET = 'Seen';
+var SEEN_HEADERS = ['movie', 'title', 'email', 'person', 'at'];
+var MAX_NAME = 40;
 var MAX_FETCHES_PER_RUN = 40;
 var DATA_VERSION = 2;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers)
 var CACHE_KEY = 'library';
@@ -40,6 +47,8 @@ function doGet() {
 /**
  * Every request is a POST with a text/plain JSON body (no CORS preflight):
  *   { action: 'library' | 'lend' | 'return', token: <Google ID token>, key, to, seenWhere }
+ *   { action: 'seen', token, movie, title, person, seen: true | false }
+ *   { action: 'household', token, names: [...] }
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  */
 function doPost(e) {
@@ -58,6 +67,8 @@ function doPost(e) {
     if (req.action === 'library') return json_({ ok: true, data: getLibrary_(user) });
     if (req.action === 'lend') return json_({ ok: true, data: lendDisc(req.key, req.to, req.seenWhere, user) });
     if (req.action === 'return') return json_({ ok: true, data: returnDisc(req.key, req.seenWhere, user) });
+    if (req.action === 'seen') return json_({ ok: true, data: markSeen(req.movie, req.title, req.person, req.seen, user) });
+    if (req.action === 'household') return json_({ ok: true, data: setHousehold(req.names, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
     return json_({ ok: false, code: err.code || 'error', error: String(err.message || err) });
@@ -129,7 +140,66 @@ function getLibrary_(user) {
     shared = buildLibrary_();
     writeLibraryCache_(shared);
   }
-  return { user: user, people: shared.people, discs: shared.discs };
+  var mine = personalData_(user);
+  return { user: user, people: shared.people, discs: shared.discs, household: mine.household, seen: mine.seen };
+}
+
+// ---------- Seen ----------
+// Movies are keyed like the page groups them: "movie:<tmdb id>", or "disc:<row key>" for TV seasons and
+// discs without movie data. Each user marks themselves and their own household; nobody else sees those marks.
+
+/** The signed-in user's household names and { movie: [people who saw it] }. */
+function personalData_(user) {
+  var household = readTable_(sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS)).rows.filter(function (r) {
+    return String(r.email).toLowerCase() === user.email && r.name;
+  }).map(function (r) { return String(r.name); });
+  var seen = {};
+  readTable_(sheet_(SEEN_SHEET, SEEN_HEADERS)).rows.forEach(function (r) {
+    if (String(r.email).toLowerCase() !== user.email || !r.movie) return;
+    (seen[r.movie] = seen[r.movie] || []).push(String(r.person));
+  });
+  return { household: household, seen: seen };
+}
+
+/** Marks or unmarks one person (the user or someone in their household) as having seen a movie. */
+function markSeen(movie, title, person, seen, user) {
+  if (!/^(movie|disc):[\w-]+$/.test(String(movie || ''))) throw new Error('Unknown movie.');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    if (person !== user.name && personalData_(user).household.indexOf(person) < 0) {
+      throw new Error(person + ' is not in your household.');
+    }
+    var sh = sheet_(SEEN_SHEET, SEEN_HEADERS);
+    var rows = readTable_(sh).rows;
+    var found = -1;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].movie === movie && String(rows[i].email).toLowerCase() === user.email && String(rows[i].person) === person) { found = i; break; }
+    }
+    if (seen && found < 0) sh.appendRow([movie, String(title || '').slice(0, 200), user.email, person, new Date()]);
+    if (!seen && found >= 0) sh.deleteRow(found + 2);
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Replaces the user's household list. Marks for removed names stay in the sheet and come back if the name is added again. */
+function setHousehold(names, user) {
+  var clean = cleanHousehold(names, user.name);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS);
+    var rows = readTable_(sh).rows;
+    for (var i = rows.length - 1; i >= 0; i--) {
+      if (String(rows[i].email).toLowerCase() === user.email) sh.deleteRow(i + 2);
+    }
+    clean.forEach(function (n) { sh.appendRow([user.email, n]); });
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function buildLibrary_() {
@@ -515,6 +585,8 @@ function setup() {
   ensureKeys();
   sheet_(METADATA_SHEET, METADATA_HEADERS);
   sheet_(LOANS_SHEET, LOANS_HEADERS);
+  sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS);
+  sheet_(SEEN_SHEET, SEEN_HEADERS);
   var users = sheet_(USERS_SHEET, USERS_HEADERS);
   if (users.getLastRow() < 2) users.appendRow([Session.getEffectiveUser().getEmail(), 'Steffen']);
   ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
@@ -574,6 +646,18 @@ function parseSeason(t) {
   return { show: String(t).replace(/\s*\(.*?\)\s*/g, ' ').replace(/\s+Seasons?\s+[\d–-]+.*$/i, '').trim(), season: null };
 }
 
+/** Trims household names, drops blanks, duplicates and the user's own name, and limits their length. */
+function cleanHousehold(names, self) {
+  if (!Array.isArray(names)) throw new Error('Bad household list.');
+  var out = [];
+  names.forEach(function (n) {
+    n = String(n == null ? '' : n).replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
+    if (n && n !== self && out.indexOf(n) < 0) out.push(n);
+  });
+  if (out.length > 20) throw new Error('A household can have at most 20 people.');
+  return out;
+}
+
 /** "5-Disc Special Edition. Batman Begins, The Dark Knight" -> ["Batman Begins", "The Dark Knight"] */
 function parseCollectionItems(notes) {
   var text = String(notes || '').replace(/\n/g, ', ');
@@ -598,5 +682,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold };
 }

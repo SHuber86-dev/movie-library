@@ -8,9 +8,9 @@ The page is hosted on **GitHub Pages** at <https://shuber86-dev.github.io/movie-
 
 | Path | What it is |
 |---|---|
-| `src/Code.gs` | API: checks the Google sign-in, reads the sheet, keeps row keys, fetches TMDB metadata, handles lending |
+| `src/Code.gs` | API: checks the Google sign-in, reads the sheet, keeps row keys, fetches TMDB metadata, handles lending and "seen by" marks |
 | `src/appsscript.json` | Manifest (runs as the owner; the script checks every caller's sign-in itself) |
-| `web/index.html` | The web page: Google sign-in, poster grid, filters, details, lend and return |
+| `web/index.html` | The web page: Google sign-in, poster grid, filters, details, lend and return, seen by and household |
 | `web/config.js` | The OAuth Client ID and the Apps Script `/exec` URL the page uses |
 | `.github/workflows/pages.yml` | Runs the tests and publishes `web/` to GitHub Pages on every push to `main` |
 | `docs/SETUP.md` | Step-by-step install guide |

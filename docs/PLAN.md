@@ -33,6 +33,10 @@ Cost is **0 €**, with no other accounts or services. There's no database to ke
 |---|---|---|
 | `Metadata` | One row per sheet row: row key, TMDB id(s), poster, plot, runtime, genres, cast, rating, IMDb id, fetched-at timestamp | The app. A human may override a TMDB id to fix a wrong match |
 | `Loans` | History log: disc row key, from, to, lent at, returned at, note | The app (append-only) |
+| `Household` | Per user (by email): the names of the people they mark movies for, such as their kids. These people have no account | The app |
+| `Seen` | Who has seen what: movie key, title, user email, person, when | The app |
+
+- **Seen marks** belong to the user who made them: each user ticks themselves and their own household, and only they see those ticks. A film is keyed by its TMDB id (`movie:603`), so it counts as seen on every disc it is on, box sets included. TV seasons and discs without TMDB data are keyed by their disc (`disc:d-0042`).
 
 - **Current holder = the `where?` column.** When someone lends or returns a disc in the app, the app writes `where?` and appends a row to `Loans`. If someone edits `where?` by hand, the app shows that, and it logs the change the next time it notices it.
 - **Row key:** sheet row numbers shift when rows are sorted or inserted, so the app keeps a hidden key column (H, for example `d-0042`) in `Tabellenblatt1` that it fills in automatically. This is the only change to the main tab.
