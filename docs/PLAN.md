@@ -37,6 +37,7 @@ Cost is **0 €**, with no other accounts or services. There's no database to ke
 | `Seen` | Who has seen what: movie key, title, user email, person, when | The app |
 | `Requests` | Requests to borrow a disc or get it back: disc key, who asked, note, when, status (open, done, cancelled, declined) | The app |
 
+- **Genre categories** are worked out by the API when it builds the library, from the TMDB genre ids stored with each film (`GENRE_CATEGORIES` in `Code.gs`), so they don't depend on the `LANGUAGE` the genre names come in. A title is in every category any of its films is in; one with no known genre is under "Other".
 - **Seen marks** belong to the user who made them: each user ticks themselves and their own household, and only they see those ticks. A film is keyed by its TMDB id (`movie:603`), so it counts as seen on every disc it is on, box sets included. TV seasons and discs without TMDB data are keyed by their disc (`disc:d-0042`).
 
 - **Current holder = the `where?` column.** When someone lends or returns a disc in the app, the app writes `where?` and appends a row to `Loans`. If someone edits `where?` by hand, the app shows that, and it logs the change the next time it notices it.

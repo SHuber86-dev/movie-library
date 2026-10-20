@@ -31,7 +31,7 @@ var REQUESTS_HEADERS = ['id', 'disc', 'title', 'by', 'note', 'at', 'status', 'cl
 var MAX_NAME = 40;
 var MAX_NOTE = 200;
 var MAX_FETCHES_PER_RUN = 40;
-var DATA_VERSION = 2;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers)
+var DATA_VERSION = 3;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers, 3: genre ids)
 var CACHE_KEY = 'library';
 var CACHE_SECONDS = 3600; // safety net; lending and sheet changes clear the cache right away
 var WARM_MINUTES = 30;    // warmLibraryCache refills the cache well before it expires
@@ -236,14 +236,54 @@ function buildLibrary_() {
       requests: requests.filter(function (q) { return q.disc === r.key && q.by !== where; }).map(function (q) {
         return { id: q.id, by: q.by, note: q.note, at: q.at instanceof Date ? q.at.toISOString() : String(q.at) };
       }),
-      meta: m && m.data_json ? JSON.parse(m.data_json) : null,
+      meta: m && m.data_json ? withCategories_(JSON.parse(m.data_json)) : null,
       history: loans.filter(function (l) { return l.id === r.key; }).map(function (l) {
         return { from: l.from, to: l.to, at: l.at instanceof Date ? l.at.toISOString() : String(l.at), by: l.by, note: l.note };
       })
     };
   });
 
-  return { people: Object.keys(people).sort(), discs: discs };
+  return { people: Object.keys(people).sort(), categories: CATEGORY_ORDER.concat([OTHER_CATEGORY]), discs: discs };
+}
+
+// ---------- Genre categories ----------
+
+// TMDB genres grouped into a few coarse categories for the "By genre" view, in display order.
+// Keyed by TMDB genre id, so they work whatever LANGUAGE the genre names come in. Movie and TV ids share one list.
+var GENRE_CATEGORIES = {
+  'Action & Adventure': [28, 12, 10752, 37, 10759, 10768], // Action, Adventure, War, Western; TV: Action & Adventure, War & Politics
+  'Sci-Fi & Fantasy': [878, 14, 10765],                     // Science Fiction, Fantasy; TV: Sci-Fi & Fantasy
+  'Comedy': [35],
+  'Crime & Thriller': [80, 53, 9648],                       // Crime, Thriller, Mystery
+  'Horror': [27],
+  'Drama': [18, 36, 10402, 10770, 10766],                   // Drama, History, Music, TV Movie; TV: Soap
+  'Romance': [10749],
+  'Family & Animation': [10751, 16, 10762],                 // Family, Animation; TV: Kids
+  'Documentary': [99, 10763, 10764, 10767]                  // Documentary; TV: News, Reality, Talk
+};
+var CATEGORY_ORDER = Object.keys(GENRE_CATEGORIES);
+var OTHER_CATEGORY = 'Other';
+
+// English TMDB genre names, for rows cached before genre ids were stored.
+var GENRE_IDS_BY_NAME = {
+  'Action': 28, 'Adventure': 12, 'Animation': 16, 'Comedy': 35, 'Crime': 80, 'Documentary': 99, 'Drama': 18,
+  'Family': 10751, 'Fantasy': 14, 'History': 36, 'Horror': 27, 'Music': 10402, 'Mystery': 9648, 'Romance': 10749,
+  'Science Fiction': 878, 'TV Movie': 10770, 'Thriller': 53, 'War': 10752, 'Western': 37, 'Action & Adventure': 10759,
+  'Kids': 10762, 'News': 10763, 'Reality': 10764, 'Sci-Fi & Fantasy': 10765, 'Soap': 10766, 'Talk': 10767, 'War & Politics': 10768
+};
+
+/** The categories one TMDB item belongs to, in display order; "Other" when none match. */
+function genreCategories(item) {
+  var ids = item.genreIds || (item.genres || []).map(function (n) { return GENRE_IDS_BY_NAME[n]; });
+  var cats = CATEGORY_ORDER.filter(function (c) {
+    return GENRE_CATEGORIES[c].some(function (id) { return ids.indexOf(id) >= 0; });
+  });
+  return cats.length ? cats : [OTHER_CATEGORY];
+}
+
+function withCategories_(data) {
+  (data.items || []).forEach(function (i) { i.categories = genreCategories(i); });
+  return data;
 }
 
 // ---------- Cache ----------
@@ -606,6 +646,7 @@ function movieDetails_(id) {
     overview: m.overview,
     runtime: m.runtime,
     genres: (m.genres || []).map(function (g) { return g.name; }),
+    genreIds: (m.genres || []).map(function (g) { return g.id; }),
     rating: m.vote_average ? Math.round(m.vote_average * 10) / 10 : null,
     poster: m.poster_path || '',
     backdrop: m.backdrop_path || '',
@@ -628,6 +669,7 @@ function tvDetails_(id, season) {
     runtime: (t.episode_run_time || [])[0] || null,
     episodes: s ? (s.episodes || []).length : t.number_of_episodes,
     genres: (t.genres || []).map(function (g) { return g.name; }),
+    genreIds: (t.genres || []).map(function (g) { return g.id; }),
     rating: t.vote_average ? Math.round(t.vote_average * 10) / 10 : null,
     poster: (s && s.poster_path) || t.poster_path || '',
     backdrop: t.backdrop_path || '',
@@ -768,5 +810,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories };
 }
