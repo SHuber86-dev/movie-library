@@ -7,6 +7,7 @@
 - **Browse the collection:** every disc appears as a poster in a searchable grid. You can filter by owner, format (HD, 4K, 3D), type (film, box set, TV) and whether a disc is available or lent out.
 - **See the details:** each movie has its plot, runtime, genres, director, main cast, rating and a link to IMDb. Box sets show every film they contain.
 - **Track who has what:** each disc shows who owns it and where it is right now. The owner or current holder can lend it to a friend or mark it returned with one click, and every handover is kept in a history.
+- **Request a disc:** ask for a disc you don't have, or ask for your own disc back, with an optional note like "for Saturday". A Requests overview lists what you've been asked to bring, grouped by person, and what you've asked others for, so the next time you meet you know which discs to grab.
 - **My shelf:** one view shows what you own, what you've lent out and what you're currently borrowing.
 
 ## How it works
