@@ -10,6 +10,7 @@
  *   - "Household": the people each user marks movies for (their kids, a partner), as plain names
  *   - "Seen":      who has seen which movie, one row per person and movie
  *   - "Requests":  requests to borrow a disc (or to get it back), with their status
+ *   - "Wishlist":  movies and series people want, shared by everyone and separate from the library
  *
  * Script properties: TMDB_TOKEN (TMDB "API Read Access Token"), LANGUAGE (e.g. en-US, de-DE).
  */
@@ -28,6 +29,11 @@ var SEEN_SHEET = 'Seen';
 var SEEN_HEADERS = ['movie', 'title', 'email', 'person', 'at'];
 var REQUESTS_SHEET = 'Requests';
 var REQUESTS_HEADERS = ['id', 'disc', 'title', 'by', 'note', 'at', 'status', 'closed_at', 'closed_by'];
+var WISHLIST_SHEET = 'Wishlist';
+var WISHLIST_HEADERS = ['ref', 'title', 'year', 'poster', 'imdb_id', 'by', 'at'];
+var MAX_WISHES = 500;
+var SEARCH_RESULTS = 12;
+var SEARCH_CACHE_SECONDS = 21600; // TMDB search answers are cached for 6 hours
 var MAX_NAME = 40;
 var MAX_NOTE = 200;
 var MAX_FETCHES_PER_RUN = 40;
@@ -55,6 +61,8 @@ function doGet() {
  *   { action: 'household', token, names: [...] }
  *   { action: 'request', token, key, note }
  *   { action: 'closeRequest', token, id, how: 'cancel' | 'decline' }
+ *   { action: 'search', token, q }                 -> TMDB movies and series, not the library
+ *   { action: 'wish' | 'unwish', token, ref }      ref like "movie:603" or "tv:1396"
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  */
 function doPost(e) {
@@ -77,6 +85,9 @@ function doPost(e) {
     if (req.action === 'household') return json_({ ok: true, data: setHousehold(req.names, user) });
     if (req.action === 'request') return json_({ ok: true, data: requestDisc(req.key, req.note, user) });
     if (req.action === 'closeRequest') return json_({ ok: true, data: closeRequest(req.id, req.how, user) });
+    if (req.action === 'search') return json_({ ok: true, data: searchTitles(req.q) });
+    if (req.action === 'wish') return json_({ ok: true, data: addWish(req.ref, user) });
+    if (req.action === 'unwish') return json_({ ok: true, data: removeWish(req.ref, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
     return json_({ ok: false, code: err.code || 'error', error: String(err.message || err) });
@@ -149,7 +160,89 @@ function getLibrary_(user) {
     writeLibraryCache_(shared);
   }
   var mine = personalData_(user);
-  return { user: user, people: shared.people, categories: shared.categories, discs: shared.discs, household: mine.household, seen: mine.seen };
+  return { user: user, people: shared.people, categories: shared.categories, discs: shared.discs, household: mine.household, seen: mine.seen, wishlist: readWishlist_() };
+}
+
+// ---------- Wishlist ----------
+// One list for everyone: any signed-in person can search TMDB, add a movie or series, and remove one
+// (for example once someone has bought it). It is kept apart from the inventory tab, so it never shows up in the library.
+
+/** Searches TMDB for movies and series. An IMDb id or link (tt1234567) is looked up directly. */
+function searchTitles(q) {
+  q = String(q || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  if (q.length < 2) return [];
+  var lang = PropertiesService.getScriptProperties().getProperty('LANGUAGE') || 'en-US';
+  var cache = CacheService.getScriptCache();
+  var key = 'search:' + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, lang + '|' + q.toLowerCase()));
+  var hit = cache.get(key);
+  if (hit) return JSON.parse(hit);
+  var imdb = parseImdbId(q);
+  var results;
+  if (imdb) {
+    var found = tmdb_('/find/' + imdb, { external_source: 'imdb_id' });
+    results = (found.movie_results || []).map(function (r) { r.media_type = 'movie'; return r; })
+      .concat((found.tv_results || []).map(function (r) { r.media_type = 'tv'; return r; }));
+  } else {
+    results = tmdb_('/search/multi', { query: q, include_adult: 'false' }).results || [];
+  }
+  var out = searchResults(results);
+  try { cache.put(key, JSON.stringify(out), SEARCH_CACHE_SECONDS); } catch (e) {}
+  return out;
+}
+
+/** Adds a title to the wishlist. Title, year and poster come from TMDB, not from the page. */
+function addWish(ref, user) {
+  ref = checkWishRef(ref);
+  var info = wishDetails_(ref); // before the lock: it calls TMDB
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
+    var rows = readTable_(sh).rows;
+    if (!rows.some(function (r) { return r.ref === ref; })) {
+      if (rows.length >= MAX_WISHES) throw new Error('The wishlist is full. Remove a few titles first.');
+      sh.appendRow([ref, cleanNote(info.title), info.year, info.poster, info.imdbId, user.name, new Date()]);
+    }
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function removeWish(ref, user) {
+  ref = checkWishRef(ref);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
+    var rows = readTable_(sh).rows;
+    for (var i = rows.length - 1; i >= 0; i--) if (rows[i].ref === ref) sh.deleteRow(i + 2);
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function wishDetails_(ref) {
+  var p = ref.split(':');
+  var t = p[0] === 'tv' ? tmdb_('/tv/' + p[1], { append_to_response: 'external_ids' }) : tmdb_('/movie/' + p[1], {});
+  return {
+    title: t.title || t.name || '',
+    year: (t.release_date || t.first_air_date || '').slice(0, 4),
+    poster: t.poster_path || '',
+    imdbId: (p[0] === 'tv' ? t.external_ids && t.external_ids.imdb_id : t.imdb_id) || ''
+  };
+}
+
+/** The wishlist, newest first. */
+function readWishlist_() {
+  return readTable_(sheet_(WISHLIST_SHEET, WISHLIST_HEADERS)).rows.filter(function (r) { return r.ref; }).map(function (r) {
+    var p = String(r.ref).split(':');
+    return {
+      ref: String(r.ref), kind: p[0], tmdbId: +p[1], title: String(r.title), year: String(r.year || ''), poster: String(r.poster || ''),
+      imdbId: String(r.imdb_id || ''), by: String(r.by || ''), at: r.at instanceof Date ? r.at.toISOString() : String(r.at || '')
+    };
+  }).reverse();
 }
 
 // ---------- Seen ----------
@@ -709,6 +802,7 @@ function setup() {
   sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS);
   sheet_(SEEN_SHEET, SEEN_HEADERS);
   sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
+  sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
   var users = sheet_(USERS_SHEET, USERS_HEADERS);
   if (users.getLastRow() < 2) users.appendRow([Session.getEffectiveUser().getEmail(), 'Steffen']);
   ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
@@ -805,10 +899,37 @@ function pickTrailer(videos) {
   return yt.length ? yt[0].key : '';
 }
 
+/** Only movies and series from a TMDB search, in TMDB's order, trimmed to what the page shows. */
+function searchResults(results) {
+  return (results || []).filter(function (r) { return (r.media_type === 'movie' || r.media_type === 'tv') && r.id; })
+    .slice(0, SEARCH_RESULTS).map(function (r) {
+      return {
+        ref: r.media_type + ':' + r.id,
+        kind: r.media_type,
+        tmdbId: r.id,
+        title: r.title || r.name || '',
+        year: (r.release_date || r.first_air_date || '').slice(0, 4),
+        poster: r.poster_path || '',
+        overview: String(r.overview || '').slice(0, 300)
+      };
+    });
+}
+
+/** "tt0133093", or an IMDb link containing it -> "tt0133093"; anything else -> null. */
+function parseImdbId(q) {
+  var m = /\b(tt\d{7,10})\b/.exec(String(q || ''));
+  return m ? m[1] : null;
+}
+
+function checkWishRef(ref) {
+  if (!/^(movie|tv):\d{1,10}$/.test(String(ref || ''))) throw new Error('Unknown title.');
+  return String(ref);
+}
+
 function normalize(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef };
 }

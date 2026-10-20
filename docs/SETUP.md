@@ -24,7 +24,7 @@ The app has two parts: the **page** at `https://shuber86-dev.github.io/movie-lib
 2. Google asks for permission. Click **Advanced → Go to Movie Library (unsafe)**. That's expected for your own, unpublished script.
 3. Setup:
    - adds a hidden `id` column to your inventory tab,
-   - creates the `Metadata`, `Loans`, `Users`, `Household`, `Seen` and `Requests` tabs,
+   - creates the `Metadata`, `Loans`, `Users`, `Household`, `Seen`, `Requests` and `Wishlist` tabs,
    - installs an hourly trigger, an on-change trigger and a 30-minute trigger that keeps the app fast,
    - fetches metadata for the first 40 discs.
 
@@ -58,5 +58,6 @@ Open the **Metadata** tab. Rows with `no match` in the `error` column, or with t
 - **Lending in the app** updates the `where?` column and logs the change in `Loans`. If you edit `where?` by hand, that's logged too, marked "edited in sheet".
 - **Seen by:** each person can add their household (kids, a partner) under **Household** in the app, then tick who has seen a movie in its details. This is stored in the `Household` and `Seen` tabs, which the app creates on first use.
 - **Requests:** anyone can request a disc they don't have (an owner can ask for a lent-out disc back), with an optional note. **Requests** in the header lists what you've been asked to bring, grouped by person, and what you've asked others for. A request closes when the disc is lent to the person who asked, or when it's cancelled or declined. Requests are stored in the `Requests` tab.
+- **Wishlist:** one list everyone shares, separate from the library. **Wishlist** in the header searches TMDB for movies and series (pasting an IMDb link or `tt…` id works too) and adds them; anyone can remove a title, for example once someone has bought it. Titles already in the library are marked. The list is stored in the `Wishlist` tab, which the app creates on first use.
 - **After changing `Code.gs`**, go to **Deploy → Manage deployments → ✎ → Version: New version → Deploy**. The URL stays the same, so `config.js` needs no change.
 - **After changing the page** (`web/`), merging to `main` republishes it automatically.
