@@ -28,6 +28,7 @@
   <header class="sticky top-0 z-10 bg-[#0f1115]/95 backdrop-blur border-b border-white/10">
     <div class="max-w-7xl mx-auto px-4 py-2 sm:py-3 flex flex-wrap gap-2 items-center">
       <h1 class="text-lg font-semibold mr-auto">🎬 Movie Library</h1>
+      <button id="requestsBtn" class="hidden text-sm text-gray-400 underline hover:text-gray-200" onclick="openRequests()">Requests</button>
       <button id="householdBtn" class="hidden text-sm text-gray-400 underline hover:text-gray-200" onclick="openHousehold()">Household</button>
       <span id="who" class="text-sm text-gray-400"></span>
       <div id="signin" class="hidden"></div>
@@ -36,7 +37,7 @@
       <input id="q" placeholder="Search title, cast, director…" class="col-span-4 sm:flex-1 sm:min-w-[12rem] bg-white/5 rounded px-3 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
       <select id="fOwner" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">All owners</option></select>
       <select id="fStatus" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
-        <option value="">Any status</option><option value="home">At owner</option><option value="out">Lent out</option><option value="mine">My shelf</option>
+        <option value="">Any status</option><option value="home">At owner</option><option value="out">Lent out</option><option value="mine">My shelf</option><option value="requested">Requested</option>
       </select>
       <select id="fFormat" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
         <option value="">All formats</option><option>HD Blu Ray</option><option>4k Blu Ray</option><option>3D Blu Ray</option>
@@ -225,6 +226,10 @@ function render(data, stale) {
   seenSel.value = seenCurrent;
   if (seenSel.value !== seenCurrent) seenSel.value = '';
   document.getElementById('householdBtn').classList.remove('hidden');
+  var askedOfMe = requestList().toMe.length;
+  var reqBtn = document.getElementById('requestsBtn');
+  reqBtn.innerHTML = 'Requests' + (askedOfMe ? ' <span class="inline-block bg-sky-500 text-black rounded-full px-1.5 text-xs font-semibold">' + askedOfMe + '</span>' : '');
+  reqBtn.classList.remove('hidden');
   markSetFilters();
 
   // One card per movie: discs matched to the same single TMDB movie are grouped together.
@@ -240,6 +245,7 @@ function render(data, stale) {
   state.groups.sort(function (a, b) { return sortTitle(a.discs[0].title).localeCompare(sortTitle(b.discs[0].title)); });
   applyFilters();
   if (state.openKey === HOUSEHOLD) openHousehold();
+  else if (state.openKey === REQUESTS) openRequests();
   else if (state.openKey) openGroup(state.openKey);
 }
 
@@ -260,6 +266,7 @@ function matches(g) {
     if (status === 'home' && d.where !== d.owner) return false;
     if (status === 'out' && d.where === d.owner) return false;
     if (status === 'mine' && d.owner !== me && d.where !== me) return false;
+    if (status === 'requested' && !(d.requests || []).length) return false;
     if (format && d.formats.indexOf(format) < 0) return false;
     if (type && (type === 'TV' ? d.type.indexOf('TV') !== 0 : d.type !== type)) return false;
     return true;
@@ -297,6 +304,7 @@ function card(g) {
   var d = g.discs[0];
   var item = g.items[0];
   var out = g.discs.some(function (x) { return x.where !== x.owner; });
+  var requested = g.discs.some(function (x) { return (x.requests || []).length; });
   var poster = item && item.poster
     ? '<img loading="lazy" decoding="async" class="poster w-full object-cover" src="' + IMG + 'w185' + esc(item.poster) + '"' +
       ' srcset="' + IMG + 'w185' + esc(item.poster) + ' 185w, ' + IMG + 'w342' + esc(item.poster) + ' 342w"' +
@@ -306,6 +314,7 @@ function card(g) {
     '<div class="relative rounded-lg overflow-hidden ring-1 ring-white/10 group-hover:ring-white/40 transition">' + poster +
       (g.items.length > 1 ? '<span class="absolute top-2 left-2 text-xs bg-black/70 rounded px-1.5 py-0.5">' + g.items.length + ' films</span>' : '') +
       (out ? '<span class="absolute top-2 right-2 text-xs bg-amber-500 text-black rounded px-1.5 py-0.5">lent</span>' : '') +
+      (requested ? '<span class="absolute bottom-2 right-2 text-xs bg-sky-500 text-black rounded px-1.5 py-0.5">requested</span>' : '') +
       (groupSeenBy(g, state.data.user.name) ? '<span class="absolute bottom-2 left-2 text-xs bg-emerald-600 rounded px-1.5 py-0.5">✓ seen</span>' : '') +
     '</div>' +
     '<div class="mt-1 sm:mt-1.5 text-xs sm:text-sm font-medium leading-tight line-clamp-2">' + esc(d.title) + '</div>' +
@@ -422,7 +431,83 @@ function redraw() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state.data)); } catch (e) {}
   applyFilters();
   if (state.openKey === HOUSEHOLD) openHousehold();
+  else if (state.openKey === REQUESTS) openRequests();
   else if (state.openKey) openGroup(state.openKey);
+}
+
+// ---------- Requests ----------
+// Anyone who doesn't have a disc can request it, with an optional note. The request is for whoever has the disc,
+// so the overview is a packing list for the next meeting: what to bring for whom, and what to collect from whom.
+
+var REQUESTS = '#requests';
+
+function requestList() {
+  var me = state.data.user.name;
+  var out = { toMe: [], mine: [] };
+  state.data.discs.forEach(function (d) {
+    (d.requests || []).forEach(function (r) {
+      if (d.where === me) out.toMe.push({ d: d, r: r });
+      if (r.by === me) out.mine.push({ d: d, r: r });
+    });
+  });
+  return out;
+}
+
+// Groups rows by a person ("For Anna", "From Matthias"), people and titles in alphabetical order.
+function byPerson(rows, person, heading, row) {
+  var groups = {};
+  rows.forEach(function (x) { (groups[person(x)] = groups[person(x)] || []).push(x); });
+  return Object.keys(groups).sort().map(function (p) {
+    var list = groups[p].sort(function (a, b) { return sortTitle(a.d.title).localeCompare(sortTitle(b.d.title)); });
+    return '<div><h4 class="font-medium mb-1.5">' + heading + ' ' + esc(p) + ' (' + list.length + ')</h4>' +
+      '<ul class="space-y-1.5">' + list.map(row).join('') + '</ul></div>';
+  }).join('');
+}
+
+function requestRow(x, buttons) {
+  return '<li class="flex flex-wrap items-center gap-2 bg-white/5 rounded px-3 py-2">' +
+    '<div class="mr-auto"><div>' + esc(x.d.title) + ' <span class="text-gray-400">· ' + esc(x.d.formats.join(', ')) + '</span></div>' +
+      '<div class="text-xs text-gray-400">' + (x.r.by === x.d.owner ? 'Back to the owner · ' : '') + 'asked ' + esc(new Date(x.r.at).toLocaleDateString()) +
+      (x.r.note ? ' · “' + esc(x.r.note) + '”' : '') + '</div></div>' + buttons + '</li>';
+}
+
+function openRequests() {
+  state.openKey = REQUESTS;
+  var lists = requestList();
+  var btn = 'rounded px-3 py-1 text-xs ';
+  var toMe = lists.toMe.length ? byPerson(lists.toMe, function (x) { return x.r.by; }, 'For', function (x) {
+    var hand = x.r.by === x.d.owner
+      ? '<button class="' + btn + 'bg-emerald-600 hover:bg-emerald-500" onclick="giveBack(\'' + esc(x.d.key) + '\')">Mark returned</button>'
+      : '<button class="' + btn + 'bg-emerald-600 hover:bg-emerald-500" onclick="lendFor(\'' + esc(x.r.id) + '\')">Lend to ' + esc(x.r.by) + '</button>';
+    return requestRow(x, hand + '<button class="' + btn + 'bg-white/10 hover:bg-white/20" onclick="closeRequest(\'' + esc(x.r.id) + '\', \'decline\')">Decline</button>');
+  }) : '<p class="text-gray-400">Nobody has asked you for a disc.</p>';
+  var mine = lists.mine.length ? byPerson(lists.mine, function (x) { return x.d.where; }, 'From', function (x) {
+    return requestRow(x, '<button class="' + btn + 'bg-white/10 hover:bg-white/20" onclick="closeRequest(\'' + esc(x.r.id) + '\', \'cancel\')">Cancel</button>');
+  }) : '<p class="text-gray-400">You haven\'t asked for any discs. Open a movie and press Request on a copy you don\'t have.</p>';
+  document.getElementById('detail').innerHTML =
+    '<div class="p-5 space-y-5 text-sm">' +
+      '<div class="flex items-center"><h2 class="text-xl font-semibold mr-auto">Requests</h2>' +
+        '<button onclick="closeModal()" class="bg-white/10 rounded-full w-8 h-8">✕</button></div>' +
+      '<section class="space-y-3"><h3 class="text-sm uppercase tracking-wide text-gray-400">Asked of me: bring these</h3>' + toMe + '</section>' +
+      '<section class="space-y-3"><h3 class="text-sm uppercase tracking-wide text-gray-400">I asked for: collect these</h3>' + mine + '</section>' +
+    '</div>';
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+// Lends the disc to whoever made this request.
+function lendFor(id) {
+  requestList().toMe.forEach(function (x) { if (x.r.id === id) lendTo(x.d.key, x.r.by); });
+}
+
+function requestDisc(key) {
+  var note = document.getElementById('note-' + key).value;
+  busy();
+  api('request', { key: key, note: note }).then(fresh, changeFailed);
+}
+
+function closeRequest(id, how) {
+  busy();
+  api('closeRequest', { id: id, how: how }).then(fresh, changeFailed);
 }
 
 // ---------- Household ----------
@@ -486,15 +571,30 @@ function copyBlock(d) {
   var me = state.data.user.name;
   var canAct = me === d.owner || me === d.where;
   var others = state.data.people.filter(function (p) { return p !== d.where; });
+  var reqs = d.requests || [];
+  var mine = reqs.filter(function (r) { return r.by === me; })[0];
   var actions = '';
   if (canAct) {
+    // The lend list starts at whoever asked first.
+    var first = reqs.length ? reqs[0].by : '';
     actions = '<div class="flex flex-wrap gap-2 mt-2">' +
       '<select id="to-' + esc(d.key) + '" class="bg-white/5 rounded px-2 py-1 text-sm">' +
-        others.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join('') + '</select>' +
+        others.map(function (p) { return '<option' + (p === first ? ' selected' : '') + '>' + esc(p) + '</option>'; }).join('') + '</select>' +
       '<button class="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm" onclick="lend(\'' + esc(d.key) + '\')">Lend</button>' +
       (d.where !== d.owner ? '<button class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-sm" onclick="giveBack(\'' + esc(d.key) + '\')">Mark returned</button>' : '') +
     '</div>';
   }
+  if (me !== d.where) {
+    actions += mine
+      ? '<div class="flex flex-wrap items-center gap-2 mt-2 text-sky-300">You asked for this disc' + (mine.note ? ' (“' + esc(mine.note) + '”)' : '') + '.' +
+        '<button class="bg-white/10 hover:bg-white/20 text-gray-100 rounded px-3 py-1 text-sm" onclick="closeRequest(\'' + esc(mine.id) + '\', \'cancel\')">Cancel request</button></div>'
+      : '<div class="flex flex-wrap gap-2 mt-2">' +
+        '<input id="note-' + esc(d.key) + '" maxlength="200" placeholder="Note, e.g. for Saturday (optional)" class="flex-1 min-w-0 bg-white/5 rounded px-2 py-1 text-sm outline-none focus:ring-1 ring-white/30">' +
+        '<button class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-1 text-sm" onclick="requestDisc(\'' + esc(d.key) + '\')">' + (me === d.owner ? 'Ask for it back' : 'Request') + '</button></div>';
+  }
+  var requested = reqs.length ? '<div class="text-sky-300">Requested by ' + reqs.map(function (r) {
+    return esc(r.by) + (r.note ? ' (“' + esc(r.note) + '”)' : '');
+  }).join(', ') + '</div>' : '';
   var history = d.history.length ? '<details class="mt-2 text-xs text-gray-400"><summary class="cursor-pointer">History (' + d.history.length + ')</summary>' +
     d.history.slice().reverse().map(function (h) {
       return '<div>' + esc(new Date(h.at).toLocaleDateString()) + ': ' + esc(h.from) + ' → ' + esc(h.to) + (h.note ? ' (' + esc(h.note) + ')' : '') + '</div>';
@@ -502,11 +602,14 @@ function copyBlock(d) {
   return '<div class="rounded-lg bg-white/5 p-3 mb-2 text-sm">' +
     '<div><span class="font-medium">' + esc(d.formats.join(', ')) + '</span>' + (d.notes && d.type.indexOf('collection') < 0 ? ' · ' + esc(d.notes) : '') + '</div>' +
     '<div class="text-gray-400">Owner: ' + esc(d.owner) + ' · Currently at: <span class="' + (d.where !== d.owner ? 'text-amber-400' : '') + '">' + esc(d.where) + '</span></div>' +
-    actions + history + '</div>';
+    requested + actions + history + '</div>';
 }
 
 function lend(key) {
-  var to = document.getElementById('to-' + key).value;
+  lendTo(key, document.getElementById('to-' + key).value);
+}
+
+function lendTo(key, to) {
   busy();
   api('lend', { key: key, to: to, seenWhere: discByKey(key).where }).then(fresh, changeFailed);
 }

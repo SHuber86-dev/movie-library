@@ -9,6 +9,7 @@
  *   - "Users":    email -> display name mapping for sign-in
  *   - "Household": the people each user marks movies for (their kids, a partner), as plain names
  *   - "Seen":      who has seen which movie, one row per person and movie
+ *   - "Requests":  requests to borrow a disc (or to get it back), with their status
  *
  * Script properties: TMDB_TOKEN (TMDB "API Read Access Token"), LANGUAGE (e.g. en-US, de-DE).
  */
@@ -25,7 +26,10 @@ var HOUSEHOLD_SHEET = 'Household';
 var HOUSEHOLD_HEADERS = ['email', 'name'];
 var SEEN_SHEET = 'Seen';
 var SEEN_HEADERS = ['movie', 'title', 'email', 'person', 'at'];
+var REQUESTS_SHEET = 'Requests';
+var REQUESTS_HEADERS = ['id', 'disc', 'title', 'by', 'note', 'at', 'status', 'closed_at', 'closed_by'];
 var MAX_NAME = 40;
+var MAX_NOTE = 200;
 var MAX_FETCHES_PER_RUN = 40;
 var DATA_VERSION = 2;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers)
 var CACHE_KEY = 'library';
@@ -49,6 +53,8 @@ function doGet() {
  *   { action: 'library' | 'lend' | 'return', token: <Google ID token>, key, to, seenWhere }
  *   { action: 'seen', token, movie, title, person, seen: true | false }
  *   { action: 'household', token, names: [...] }
+ *   { action: 'request', token, key, note }
+ *   { action: 'closeRequest', token, id, how: 'cancel' | 'decline' }
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  */
 function doPost(e) {
@@ -69,6 +75,8 @@ function doPost(e) {
     if (req.action === 'return') return json_({ ok: true, data: returnDisc(req.key, req.seenWhere, user) });
     if (req.action === 'seen') return json_({ ok: true, data: markSeen(req.movie, req.title, req.person, req.seen, user) });
     if (req.action === 'household') return json_({ ok: true, data: setHousehold(req.names, user) });
+    if (req.action === 'request') return json_({ ok: true, data: requestDisc(req.key, req.note, user) });
+    if (req.action === 'closeRequest') return json_({ ok: true, data: closeRequest(req.id, req.how, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
     return json_({ ok: false, code: err.code || 'error', error: String(err.message || err) });
@@ -206,6 +214,7 @@ function buildLibrary_() {
   var inv = readInventory_();
   var meta = readMetadata_();
   var loans = readTable_(sheet_(LOANS_SHEET, LOANS_HEADERS)).rows;
+  var requests = readTable_(sheet_(REQUESTS_SHEET, REQUESTS_HEADERS)).rows.filter(function (q) { return q.status === 'open'; });
   var people = {};
   readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.forEach(function (u) { if (u.name) people[u.name] = true; });
 
@@ -213,6 +222,7 @@ function buildLibrary_() {
     if (r.owner) people[r.owner] = true;
     if (r.where) people[r.where] = true;
     var m = meta[r.key];
+    var where = r.where || r.owner;
     return {
       key: r.key,
       title: r.title,
@@ -221,7 +231,11 @@ function buildLibrary_() {
       type: r.type,
       notes: r.notes,
       owner: r.owner,
-      where: r.where || r.owner,
+      where: where,
+      // A request by whoever has the disc now was met by a hand edit of "where?".
+      requests: requests.filter(function (q) { return q.disc === r.key && q.by !== where; }).map(function (q) {
+        return { id: q.id, by: q.by, note: q.note, at: q.at instanceof Date ? q.at.toISOString() : String(q.at) };
+      }),
       meta: m && m.data_json ? JSON.parse(m.data_json) : null,
       history: loans.filter(function (l) { return l.id === r.key; }).map(function (l) {
         return { from: l.from, to: l.to, at: l.at instanceof Date ? l.at.toISOString() : String(l.at), by: l.by, note: l.note };
@@ -295,11 +309,75 @@ function changeHolder_(key, toName, note, seenWhere, user) {
     inv.sheet.getRange(row.rowIndex, inv.cols.where + 1).setValue(target);
     sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([key, row.title, holder, target, new Date(), user.name, note]);
     setWhereSeen_(key, target);
+    fulfilRequests_(key, target, user.name);
     clearLibraryCache_();
     return getLibrary_(user);
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------- Requests ----------
+// Anyone who doesn't have a disc can ask for it. The request is for whoever has the disc, so it follows the disc
+// when it moves; an owner asking for a lent-out disc is asking for it back. It closes when the disc reaches the
+// person who asked, when they cancel it, or when the holder declines it. Everyone sees the open requests.
+
+function requestDisc(key, note, user) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var row = readInventory_().rows.filter(function (r) { return r.key === key; })[0];
+    if (!row) throw new Error('Disc not found. Reload the page.');
+    if ((row.where || row.owner) === user.name) throw new Error('You already have ' + row.title + '.');
+    var sh = sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
+    var rows = readTable_(sh).rows;
+    var asked = rows.some(function (r) { return r.disc === key && r.by === user.name && r.status === 'open'; });
+    if (!asked) sh.appendRow(['r-' + (rows.length + 1), key, row.title, user.name, cleanNote(note), new Date(), 'open', '', '']);
+    clearLibraryCache_();
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** how: 'cancel' (by the person who asked) or 'decline' (by whoever has the disc). */
+function closeRequest(id, how, user) {
+  if (how !== 'cancel' && how !== 'decline') throw new Error('Unknown action.');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
+    var rows = readTable_(sh).rows;
+    var i = -1;
+    for (var j = 0; j < rows.length; j++) if (rows[j].id === id) { i = j; break; }
+    if (i < 0) throw new Error('Request not found. Reload the page.');
+    var r = rows[i];
+    if (r.status === 'open') {
+      if (how === 'cancel' && r.by !== user.name) throw new Error('Only ' + r.by + ' can cancel this request.');
+      if (how === 'decline') {
+        var disc = readInventory_().rows.filter(function (d) { return d.key === r.disc; })[0];
+        var holder = disc ? disc.where || disc.owner : '';
+        if (holder !== user.name) throw new Error('Only ' + holder + ', who has the disc, can decline this request.');
+      }
+      setRequestStatus_(sh, i + 2, how === 'cancel' ? 'cancelled' : 'declined', user.name);
+    }
+    clearLibraryCache_();
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Closes the open requests for a disc by the person it just reached. Callers hold the lock. */
+function fulfilRequests_(key, to, by) {
+  var sh = sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
+  readTable_(sh).rows.forEach(function (r, i) {
+    if (r.disc === key && r.by === to && r.status === 'open') setRequestStatus_(sh, i + 2, 'done', by);
+  });
+}
+
+function setRequestStatus_(sh, rowIndex, status, by) {
+  sh.getRange(rowIndex, REQUESTS_HEADERS.indexOf('status') + 1, 1, 3).setValues([[status, new Date(), by]]);
 }
 
 /** The signed-in person's display name comes from the Users tab. */
@@ -409,6 +487,7 @@ function syncWhere_() {
       } else if (entry.row.where_seen !== where) {
         if (entry.row.where_seen) {
           sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([d.key, d.title, entry.row.where_seen, where, new Date(), '', 'edited in sheet']);
+          fulfilRequests_(d.key, where, '');
         }
         msh.getRange(entry.rowIndex, 8).setValue(where);
       }
@@ -587,6 +666,7 @@ function setup() {
   sheet_(LOANS_SHEET, LOANS_HEADERS);
   sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS);
   sheet_(SEEN_SHEET, SEEN_HEADERS);
+  sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
   var users = sheet_(USERS_SHEET, USERS_HEADERS);
   if (users.getLastRow() < 2) users.appendRow([Session.getEffectiveUser().getEmail(), 'Steffen']);
   ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
@@ -658,6 +738,12 @@ function cleanHousehold(names, self) {
   return out;
 }
 
+/** Trims a request note to one short line. A leading = + - or @ is kept as text, not run as a formula. */
+function cleanNote(note) {
+  var s = String(note == null ? '' : note).replace(/\s+/g, ' ').trim().slice(0, MAX_NOTE);
+  return /^[=+\-@]/.test(s) ? "'" + s : s;
+}
+
 /** "5-Disc Special Edition. Batman Begins, The Dark Knight" -> ["Batman Begins", "The Dark Knight"] */
 function parseCollectionItems(notes) {
   var text = String(notes || '').replace(/\n/g, ', ');
@@ -682,5 +768,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote };
 }

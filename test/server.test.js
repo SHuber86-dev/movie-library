@@ -22,7 +22,7 @@ function load() {
     sheet: { getRange: () => ({ setValue: v => writes.push(v) }) },
     rows: [{ key: 'd-0001', rowIndex: 2, title: 'Heat', owner: 'Steffen', where: 'Matthias' }]
   });
-  ctx.sheet_ = () => ({ appendRow: r => writes.push(r) });
+  ctx.sheet_ = () => ({ appendRow: r => writes.push(r), getDataRange: () => ({ getValues: () => [['id']] }) });
   ctx.setWhereSeen_ = () => {};
   ctx.getLibrary_ = () => 'fresh library';
   return { ctx, writes };

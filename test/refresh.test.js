@@ -19,7 +19,8 @@ function fakeSheet(rows) {
     getLastRow: () => rows.length,
     getLastColumn: () => rows[0].length,
     appendRow: r => rows.push(r.slice()),
-    hideColumns() {}
+    hideColumns() {},
+    setFrozenRows() {}
   };
 }
 
