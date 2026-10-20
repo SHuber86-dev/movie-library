@@ -149,7 +149,7 @@ function getLibrary_(user) {
     writeLibraryCache_(shared);
   }
   var mine = personalData_(user);
-  return { user: user, people: shared.people, discs: shared.discs, household: mine.household, seen: mine.seen };
+  return { user: user, people: shared.people, categories: shared.categories, discs: shared.discs, household: mine.household, seen: mine.seen };
 }
 
 // ---------- Seen ----------

@@ -41,3 +41,13 @@ test('every category the page can show is listed in order, Other last', () => {
     'Drama', 'Romance', 'Family & Animation', 'Documentary', 'Other'
   ]);
 });
+
+test('the library the page gets carries the category order', () => {
+  const lib = { people: [], categories: ['Drama', 'Other'], discs: [] };
+  const c = { module: { exports: {} } };
+  vm.createContext(c);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/Code.gs'), 'utf8'), c);
+  c.readLibraryCache_ = () => lib;
+  c.personalData_ = () => ({ household: [], seen: {} });
+  assert.deepStrictEqual(Array.from(c.getLibrary_({ name: 'Steffen' }).categories), ['Drama', 'Other']);
+});

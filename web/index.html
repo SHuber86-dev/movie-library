@@ -312,8 +312,8 @@ function applyFilters() {
 var GRID_CLASS = 'grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 sm:gap-4';
 
 // One section per genre category, in the order the API gives. A title shows in every category any of its films is in.
+// A category the API's order leaves out still gets a section, before "Other", so no title is ever dropped.
 function genreSections(groups) {
-  var order = state.data.categories || ['Other'];
   var buckets = {};
   groups.forEach(function (g) {
     var cats = {};
@@ -321,6 +321,8 @@ function genreSections(groups) {
     if (!g.items.length) cats.Other = true;
     Object.keys(cats).forEach(function (c) { (buckets[c] = buckets[c] || []).push(g); });
   });
+  var order = (state.data.categories || []).filter(function (c) { return c !== 'Other'; });
+  order = order.concat(Object.keys(buckets).filter(function (c) { return c !== 'Other' && order.indexOf(c) < 0; }).sort(), ['Other']);
   return order.filter(function (c) { return buckets[c]; }).map(function (c) {
     return '<section class="mb-6 sm:mb-8">' +
       '<h2 class="text-sm sm:text-base font-semibold mb-2 sm:mb-3">' + esc(c) + ' <span class="text-gray-400 font-normal">' + buckets[c].length + '</span></h2>' +
