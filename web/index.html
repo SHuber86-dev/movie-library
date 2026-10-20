@@ -13,17 +13,15 @@
     /* Desktop filter dropdowns: solid dark fields with readable option lists, and a clear
        highlight on any filter that is not at its default. Phones keep their native look. */
     @media (min-width: 640px) {
-      #filters select, #filters button {
+      #filters select {
         background: #1d2230; color: #f3f4f6; border: 1px solid #3b4252;
         color-scheme: dark; cursor: pointer;
       }
-      #filters select:hover, #filters button:hover { border-color: #7b8494; }
+      #filters select:hover { border-color: #7b8494; }
       #filters select:focus { outline: none; border-color: #e5e7eb; box-shadow: 0 0 0 1px #e5e7eb; }
       #filters select option { background: #1d2230; color: #f3f4f6; }
       #filters select.is-set { background: #f59e0b; color: #111827; border-color: #fbbf24; font-weight: 600; }
     }
-    /* The "By genre" switch is highlighted while on, on phones too. */
-    #filters button.is-set { background: #f59e0b; color: #111827; border-color: #fbbf24; font-weight: 600; }
   </style>
 </head>
 <body class="text-gray-100 font-sans">
@@ -47,8 +45,8 @@
       <select id="fType" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
         <option value="">All types</option><option>Film</option><option>Film collection</option><option value="TV">TV</option>
       </select>
-      <select id="fSeen" class="col-span-3 min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">Seen or not</option></select>
-      <button id="viewBtn" class="min-w-0 bg-white/5 hover:bg-white/10 rounded px-1 sm:px-3 py-1.5 sm:py-2 whitespace-nowrap" onclick="toggleView()" aria-pressed="false">By genre</button>
+      <select id="fSeen" class="col-span-2 min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">Seen or not</option></select>
+      <select id="fGenre" class="col-span-2 min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">All genres</option></select>
     </div>
   </header>
 
@@ -71,7 +69,6 @@
 var IMG = 'https://image.tmdb.org/t/p/';
 var STORE_KEY = 'movie-library:v1';
 var TOKEN_KEY = 'movie-library:token';
-var VIEW_KEY = 'movie-library:view';
 var CONFIG = window.MOVIE_LIBRARY_CONFIG || {};
 var state = { data: null, groups: [] };
 var auth = { token: null, exp: 0, waiting: [], gis: false };
@@ -172,8 +169,6 @@ function load() {
     var t = JSON.parse(localStorage.getItem(TOKEN_KEY));
     if (t) { auth.token = t.token; auth.exp = t.exp; }
   } catch (e) {}
-  try { state.view = localStorage.getItem(VIEW_KEY) || 'all'; } catch (e) {}
-  markView();
   var saved = null;
   try { saved = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
   if (saved) render(saved, true);
@@ -231,6 +226,13 @@ function render(data, stale) {
   }).join('');
   seenSel.value = seenCurrent;
   if (seenSel.value !== seenCurrent) seenSel.value = '';
+  var genreSel = document.getElementById('fGenre');
+  var genreCurrent = genreSel.value;
+  genreSel.innerHTML = '<option value="">All genres</option>' + genreList(data).map(function (c) {
+    return '<option>' + esc(c) + '</option>';
+  }).join('');
+  genreSel.value = genreCurrent;
+  if (genreSel.value !== genreCurrent) genreSel.value = '';
   document.getElementById('householdBtn').classList.remove('hidden');
   var askedOfMe = requestList().toMe.length;
   var reqBtn = document.getElementById('requestsBtn');
@@ -278,6 +280,8 @@ function matches(g) {
     return true;
   });
   if (!discs.length) return false;
+  var genre = document.getElementById('fGenre').value;
+  if (genre && groupCategories(g).indexOf(genre) < 0) return false;
   var seen = document.getElementById('fSeen').value;
   if (seen) {
     var person = seen.slice(seen.indexOf(':') + 1);
@@ -292,7 +296,7 @@ function matches(g) {
 
 // Highlights dropdowns that are set to something other than their first ("All …") option.
 function markSetFilters() {
-  ['fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen'].forEach(function (id) {
+  ['fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen', 'fGenre'].forEach(function (id) {
     var el = document.getElementById(id);
     el.classList.toggle('is-set', el.value !== '');
   });
@@ -303,46 +307,27 @@ function applyFilters() {
   var discCount = shown.reduce(function (n, g) { return n + g.discs.length; }, 0);
   document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles · ' +
     discCount + ' of ' + state.data.discs.length + ' discs' + (state.stale ? ' · updating…' : '');
-  var grid = document.getElementById('grid');
-  var byGenre = state.view === 'genre';
-  grid.className = byGenre ? '' : GRID_CLASS;
-  grid.innerHTML = byGenre ? genreSections(shown) : shown.map(card).join('');
+  document.getElementById('grid').innerHTML = shown.map(card).join('');
 }
 
-var GRID_CLASS = 'grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 sm:gap-4';
+// The genre categories of a title: those of every film on its discs, or "Other" without movie data.
+function groupCategories(g) {
+  var cats = [];
+  g.items.forEach(function (i) { (i.categories || ['Other']).forEach(function (c) { if (cats.indexOf(c) < 0) cats.push(c); }); });
+  return cats.length ? cats : ['Other'];
+}
 
-// One section per genre category, in the order the API gives. A title shows in every category any of its films is in.
-// A category the API's order leaves out still gets a section, before "Other", so no title is ever dropped.
-function genreSections(groups) {
-  var buckets = {};
-  groups.forEach(function (g) {
-    var cats = {};
-    g.items.forEach(function (i) { (i.categories || ['Other']).forEach(function (c) { cats[c] = true; }); });
-    if (!g.items.length) cats.Other = true;
-    Object.keys(cats).forEach(function (c) { (buckets[c] = buckets[c] || []).push(g); });
+// The genres to offer, in the order the API gives; any it leaves out come after, alphabetically, so every title stays reachable.
+// Only genres some title is in are listed.
+function genreList(data) {
+  var present = {};
+  data.discs.forEach(function (d) {
+    var items = d.meta && d.meta.items || [];
+    groupCategories({ items: items }).forEach(function (c) { present[c] = true; });
   });
-  var order = (state.data.categories || []).filter(function (c) { return c !== 'Other'; });
-  order = order.concat(Object.keys(buckets).filter(function (c) { return c !== 'Other' && order.indexOf(c) < 0; }).sort(), ['Other']);
-  return order.filter(function (c) { return buckets[c]; }).map(function (c) {
-    return '<section class="mb-6 sm:mb-8">' +
-      '<h2 class="text-sm sm:text-base font-semibold mb-2 sm:mb-3">' + esc(c) + ' <span class="text-gray-400 font-normal">' + buckets[c].length + '</span></h2>' +
-      '<div class="' + GRID_CLASS + '">' + buckets[c].map(card).join('') + '</div>' +
-    '</section>';
-  }).join('');
-}
-
-function toggleView() {
-  state.view = state.view === 'genre' ? 'all' : 'genre';
-  try { localStorage.setItem(VIEW_KEY, state.view); } catch (e) {}
-  markView();
-  if (state.data) applyFilters();
-}
-
-function markView() {
-  var btn = document.getElementById('viewBtn');
-  var on = state.view === 'genre';
-  btn.classList.toggle('is-set', on);
-  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  var order = (data.categories || []).filter(function (c) { return c !== 'Other'; });
+  order = order.concat(Object.keys(present).filter(function (c) { return c !== 'Other' && order.indexOf(c) < 0; }).sort(), ['Other']);
+  return order.filter(function (c) { return present[c]; });
 }
 
 function card(g) {
@@ -676,7 +661,7 @@ function closeModal() {
   document.getElementById('modal').classList.add('hidden');
 }
 
-['q', 'fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen'].forEach(function (id) {
+['q', 'fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen', 'fGenre'].forEach(function (id) {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('input', markSetFilters);
 });
