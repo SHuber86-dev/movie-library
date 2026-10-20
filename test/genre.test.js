@@ -49,5 +49,6 @@ test('the library the page gets carries the category order', () => {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/Code.gs'), 'utf8'), c);
   c.readLibraryCache_ = () => lib;
   c.personalData_ = () => ({ household: [], seen: {} });
+  c.readWishlist_ = () => [];
   assert.deepStrictEqual(Array.from(c.getLibrary_({ name: 'Steffen' }).categories), ['Drama', 'Other']);
 });
