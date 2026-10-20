@@ -35,6 +35,7 @@ Cost is **0 €**, with no other accounts or services. There's no database to ke
 | `Loans` | History log: disc row key, from, to, lent at, returned at, note | The app (append-only) |
 | `Household` | Per user (by email): the names of the people they mark movies for, such as their kids. These people have no account | The app |
 | `Seen` | Who has seen what: movie key, title, user email, person, when | The app |
+| `Requests` | Requests to borrow a disc or get it back: disc key, who asked, note, when, status (open, done, cancelled, declined) | The app |
 
 - **Seen marks** belong to the user who made them: each user ticks themselves and their own household, and only they see those ticks. A film is keyed by its TMDB id (`movie:603`), so it counts as seen on every disc it is on, box sets included. TV seasons and discs without TMDB data are keyed by their disc (`disc:d-0042`).
 
