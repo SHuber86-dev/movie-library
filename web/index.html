@@ -10,31 +10,37 @@
   <style>
     body { background: #0f1115; }
     .poster { aspect-ratio: 2 / 3; }
+    .filters[hidden] { display: none !important; } /* sm:flex would otherwise show a hidden filter bar */
+    #views button[aria-pressed="true"] { background: #f3f4f6; color: #111827; }
     /* Desktop filter dropdowns: solid dark fields with readable option lists, and a clear
        highlight on any filter that is not at its default. Phones keep their native look. */
     @media (min-width: 640px) {
-      #filters select {
+      .filters select {
         background: #1d2230; color: #f3f4f6; border: 1px solid #3b4252;
         color-scheme: dark; cursor: pointer;
       }
-      #filters select:hover { border-color: #7b8494; }
-      #filters select:focus { outline: none; border-color: #e5e7eb; box-shadow: 0 0 0 1px #e5e7eb; }
-      #filters select option { background: #1d2230; color: #f3f4f6; }
-      #filters select.is-set { background: #f59e0b; color: #111827; border-color: #fbbf24; font-weight: 600; }
+      .filters select:hover { border-color: #7b8494; }
+      .filters select:focus { outline: none; border-color: #e5e7eb; box-shadow: 0 0 0 1px #e5e7eb; }
+      .filters select option { background: #1d2230; color: #f3f4f6; }
+      .filters select.is-set { background: #f59e0b; color: #111827; border-color: #fbbf24; font-weight: 600; }
     }
   </style>
 </head>
 <body class="text-gray-100 font-sans">
   <header class="sticky top-0 z-10 bg-[#0f1115]/95 backdrop-blur border-b border-white/10">
     <div class="max-w-7xl mx-auto px-4 py-2 sm:py-3 flex flex-wrap gap-2 items-center">
-      <h1 class="text-lg font-semibold mr-auto">🎬 Movie Library</h1>
-      <button id="wishlistBtn" class="hidden text-sm text-gray-400 underline hover:text-gray-200" onclick="openWishlist()">Wishlist</button>
+      <h1 class="text-lg font-semibold">🎬 Movie Library</h1>
+      <nav id="views" class="hidden mr-auto ml-1 flex rounded-full bg-white/5 p-0.5 text-sm">
+        <button id="tabLibrary" class="rounded-full px-3 py-0.5" onclick="showView('library')">Library</button>
+        <button id="tabWishlist" class="rounded-full px-3 py-0.5" onclick="showView('wishlist')">Wishlist</button>
+      </nav>
+      <span class="mr-auto" id="viewsSpacer"></span>
       <button id="requestsBtn" class="hidden text-sm text-gray-400 underline hover:text-gray-200" onclick="openRequests()">Requests</button>
       <button id="householdBtn" class="hidden text-sm text-gray-400 underline hover:text-gray-200" onclick="openHousehold()">Household</button>
       <span id="who" class="text-sm text-gray-400"></span>
       <div id="signin" class="hidden"></div>
     </div>
-    <div id="filters" class="max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-4 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
+    <div id="filters" class="filters max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-4 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
       <input id="q" placeholder="Search title, cast, director…" class="col-span-4 sm:flex-1 sm:min-w-[12rem] bg-white/5 rounded px-3 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
       <select id="fOwner" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">All owners</option></select>
       <select id="fStatus" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
@@ -49,12 +55,26 @@
       <select id="fSeen" class="col-span-2 min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">Seen or not</option></select>
       <select id="fGenre" class="col-span-2 min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">All genres</option></select>
     </div>
+    <div id="wishFilters" hidden class="filters max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-3 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
+      <input id="wq" autocomplete="off" placeholder="Search the wishlist, or find a movie or series to add…" class="col-span-3 sm:flex-1 sm:min-w-[12rem] bg-white/5 rounded px-3 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
+      <select id="wKind" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
+        <option value="">Movies & series</option><option value="movie">Movies</option><option value="tv">Series</option>
+      </select>
+      <select id="wBy" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">Added by anyone</option></select>
+      <select id="wSort" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
+        <option value="">Newest first</option><option value="title">Title</option><option value="year">Release year</option>
+      </select>
+    </div>
   </header>
 
   <main class="max-w-7xl mx-auto px-4 py-2 sm:py-4">
     <p id="status" class="text-gray-400 text-xs sm:text-sm mb-2 sm:mb-3">Loading library…</p>
     <p id="notice" class="hidden fixed bottom-4 left-4 right-4 sm:left-auto sm:max-w-sm z-30 bg-amber-500 text-black text-sm rounded-lg px-4 py-3 shadow-lg"></p>
     <div id="grid" class="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 sm:gap-4"></div>
+    <div id="wishView" class="hidden space-y-4">
+      <section id="addResults"></section>
+      <div id="wishGrid" class="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 sm:gap-4"></div>
+    </div>
   </main>
 
   <div id="modal" class="fixed inset-0 z-20 hidden bg-black/70 overflow-y-auto" onclick="if (event.target === this) closeModal()">
@@ -71,7 +91,7 @@ var IMG = 'https://image.tmdb.org/t/p/';
 var STORE_KEY = 'movie-library:v1';
 var TOKEN_KEY = 'movie-library:token';
 var CONFIG = window.MOVIE_LIBRARY_CONFIG || {};
-var state = { data: null, groups: [] };
+var state = { data: null, groups: [], view: location.hash === '#wishlist' ? 'wishlist' : 'library' };
 var auth = { token: null, exp: 0, waiting: [], gis: false };
 
 function esc(s) {
@@ -240,9 +260,19 @@ function render(data, stale) {
   reqBtn.innerHTML = 'Requests' + (askedOfMe ? ' <span class="inline-block bg-sky-500 text-black rounded-full px-1.5 text-xs font-semibold">' + askedOfMe + '</span>' : '');
   reqBtn.classList.remove('hidden');
   var wishCount = (data.wishlist || []).length;
-  var wishBtn = document.getElementById('wishlistBtn');
-  wishBtn.textContent = 'Wishlist' + (wishCount ? ' (' + wishCount + ')' : '');
-  wishBtn.classList.remove('hidden');
+  document.getElementById('tabWishlist').textContent = 'Wishlist' + (wishCount ? ' (' + wishCount + ')' : '');
+  document.getElementById('views').classList.remove('hidden');
+  document.getElementById('viewsSpacer').classList.add('hidden');
+  var bySel = document.getElementById('wBy');
+  var byCurrent = bySel.value;
+  var adders = {};
+  (data.wishlist || []).forEach(function (w) { if (w.by) adders[w.by] = true; });
+  bySel.innerHTML = '<option value="">Added by anyone</option>' + Object.keys(adders).sort().map(function (p) {
+    return '<option>' + esc(p) + '</option>';
+  }).join('');
+  bySel.value = byCurrent;
+  if (bySel.value !== byCurrent) bySel.value = '';
+  showView(state.view, true);
   markSetFilters();
 
   // One card per movie: discs matched to the same single TMDB movie are grouped together.
@@ -259,7 +289,7 @@ function render(data, stale) {
   applyFilters();
   if (state.openKey === HOUSEHOLD) openHousehold();
   else if (state.openKey === REQUESTS) openRequests();
-  else if (state.openKey === WISHLIST) drawWishlist();
+  else if (state.openKey && state.openKey.indexOf(WISH_PREFIX) === 0) openWish(state.openKey.slice(WISH_PREFIX.length));
   else if (state.openKey) openGroup(state.openKey);
 }
 
@@ -302,13 +332,14 @@ function matches(g) {
 
 // Highlights dropdowns that are set to something other than their first ("All …") option.
 function markSetFilters() {
-  ['fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen', 'fGenre'].forEach(function (id) {
+  ['fOwner', 'fStatus', 'fFormat', 'fType', 'fSeen', 'fGenre', 'wKind', 'wBy', 'wSort'].forEach(function (id) {
     var el = document.getElementById(id);
     el.classList.toggle('is-set', el.value !== '');
   });
 }
 
 function applyFilters() {
+  if (state.view === 'wishlist') return drawWishView();
   var shown = state.groups.filter(matches);
   var discCount = shown.reduce(function (n, g) { return n + g.discs.length; }, 0);
   document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles · ' +
@@ -468,7 +499,7 @@ function redraw() {
   applyFilters();
   if (state.openKey === HOUSEHOLD) openHousehold();
   else if (state.openKey === REQUESTS) openRequests();
-  else if (state.openKey === WISHLIST) drawWishlist();
+  else if (state.openKey && state.openKey.indexOf(WISH_PREFIX) === 0) openWish(state.openKey.slice(WISH_PREFIX.length));
   else if (state.openKey) openGroup(state.openKey);
 }
 
@@ -548,46 +579,109 @@ function closeRequest(id, how) {
 }
 
 // ---------- Wishlist ----------
-// One list everyone shares, kept apart from the library: search TMDB (or paste an IMDb link), add what you'd like to get.
-// The search box stays in place while results and the list redraw, so typing is never interrupted.
+// One list everyone shares, kept apart from the library, shown as its own page next to it (#wishlist).
+// The search box filters the wishlist and, after a short pause, also searches TMDB (or an IMDb link) for titles to add.
 
-var WISHLIST = '#wishlist';
-var wish = { q: '', results: null, error: '', loading: false, seq: 0, timer: null, cache: {}, adding: {} };
+var WISH_PREFIX = 'wish:';
+var wish = { results: null, error: '', loading: false, seq: 0, timer: null, cache: {}, adding: {} };
 
-function openWishlist() {
-  state.openKey = WISHLIST;
-  document.getElementById('detail').innerHTML =
-    '<div class="p-5 space-y-5 text-sm">' +
-      '<div class="flex items-center"><h2 class="text-xl font-semibold mr-auto">Wishlist</h2>' +
-        '<button onclick="closeModal()" class="bg-white/10 rounded-full w-8 h-8">✕</button></div>' +
-      '<p class="text-gray-400">Movies and series someone would like to get. Everyone sees the same list, and it is separate from the library.</p>' +
-      '<input id="wq" autocomplete="off" placeholder="Search movies and series, or paste an IMDb link…" class="w-full bg-white/5 rounded px-3 py-2 outline-none focus:ring-1 ring-white/30">' +
-      '<div id="wresults"></div>' +
-      '<section class="space-y-2"><h3 id="wcount" class="text-sm uppercase tracking-wide text-gray-400"></h3><ul id="wlist" class="space-y-1.5"></ul></section>' +
-    '</div>';
-  var input = document.getElementById('wq');
-  input.value = wish.q;
-  input.addEventListener('input', function () { wishSearch(input.value); });
-  document.getElementById('modal').classList.remove('hidden');
-  drawWishlist();
-  input.focus();
+// Switches between the library and the wishlist. The choice is kept in the address, so a reload or a shared link keeps it.
+function showView(view, quiet) {
+  state.view = view === 'wishlist' ? 'wishlist' : 'library';
+  var onWish = state.view === 'wishlist';
+  if (!quiet) {
+    try { history.replaceState(null, '', onWish ? '#wishlist' : location.pathname + location.search); } catch (e) {}
+    window.scrollTo(0, 0);
+  }
+  document.getElementById('tabLibrary').setAttribute('aria-pressed', !onWish);
+  document.getElementById('tabWishlist').setAttribute('aria-pressed', onWish);
+  document.getElementById('filters').hidden = onWish;
+  document.getElementById('wishFilters').hidden = !onWish;
+  document.getElementById('grid').classList.toggle('hidden', onWish);
+  document.getElementById('wishView').classList.toggle('hidden', !onWish);
+  if (!quiet && state.data) applyFilters();
 }
 
-// Searches after a short pause in typing. Answers that arrive after a newer search started are dropped.
-function wishSearch(q) {
-  wish.q = q;
+function wishQuery() {
+  return document.getElementById('wq').value.replace(/\s+/g, ' ').trim();
+}
+
+function drawWishView() {
+  var all = state.data.wishlist || [];
+  var q = wishQuery().toLowerCase();
+  var kind = document.getElementById('wKind').value;
+  var by = document.getElementById('wBy').value;
+  var sort = document.getElementById('wSort').value;
+  var owned = libraryRefs();
+  var shown = all.filter(function (w) {
+    if (kind && w.kind !== kind) return false;
+    if (by && w.by !== by) return false;
+    return !q || w.title.toLowerCase().indexOf(q) >= 0;
+  });
+  if (sort === 'title') shown.sort(function (a, b) { return sortTitle(a.title).localeCompare(sortTitle(b.title)); });
+  if (sort === 'year') shown.sort(function (a, b) { return (b.year || '0').localeCompare(a.year || '0'); });
+  document.getElementById('status').textContent = shown.length + ' of ' + all.length + ' titles on the wishlist' + (state.stale ? ' · updating…' : '');
+  document.getElementById('wishGrid').innerHTML = shown.length ? shown.map(function (w) { return wishCard(w, owned); }).join('') :
+    '<p class="col-span-full text-sm text-gray-400">' + (all.length ? 'Nothing on the wishlist matches.' : 'The wishlist is empty. Search above to add a movie or series.') + '</p>';
+  drawWishResults();
+}
+
+function wishCard(w, owned) {
+  var poster = w.poster
+    ? '<img loading="lazy" decoding="async" class="poster w-full object-cover" src="' + IMG + 'w185' + esc(w.poster) + '"' +
+      ' srcset="' + IMG + 'w185' + esc(w.poster) + ' 185w, ' + IMG + 'w342' + esc(w.poster) + ' 342w"' +
+      ' sizes="(min-width: 1024px) 16vw, (min-width: 768px) 25vw, 33vw" alt="">'
+    : '<div class="poster w-full flex items-center justify-center p-3 text-center text-sm text-gray-400 bg-white/5">' + esc(w.title) + '</div>';
+  return '<button class="text-left group self-start" onclick="openWish(\'' + esc(w.ref) + '\')">' +
+    '<div class="relative rounded-lg overflow-hidden ring-1 ring-white/10 group-hover:ring-white/40 transition">' + poster +
+      (w.kind === 'tv' ? '<span class="absolute top-2 left-2 text-xs bg-black/70 rounded px-1.5 py-0.5">series</span>' : '') +
+      (owned[w.ref] ? '<span class="absolute top-2 right-2 text-xs bg-emerald-600 rounded px-1.5 py-0.5">in library</span>' : '') +
+    '</div>' +
+    '<div class="mt-1 sm:mt-1.5 text-xs sm:text-sm font-medium leading-tight line-clamp-2">' + esc(w.title) + '</div>' +
+    '<div class="text-[11px] sm:text-xs text-gray-400 truncate">' + esc([w.year, w.by].filter(Boolean).join(' · ')) + '</div>' +
+  '</button>';
+}
+
+function openWish(ref) {
+  var w = (state.data.wishlist || []).filter(function (x) { return x.ref === ref; })[0];
+  if (!w) return closeModal();
+  state.openKey = WISH_PREFIX + ref;
+  var owned = libraryRefs()[ref];
+  document.getElementById('detail').innerHTML =
+    '<div class="p-5 space-y-4 text-sm">' +
+      '<div class="flex items-start gap-4">' +
+        (w.poster ? '<img decoding="async" class="w-28 sm:w-36 rounded self-start" src="' + IMG + 'w342' + esc(w.poster) + '" alt="">' : '') +
+        '<div class="space-y-1 min-w-0 mr-auto">' +
+          '<h2 class="text-2xl font-semibold">' + esc(w.title) + '</h2>' +
+          '<div class="text-gray-400">' + esc([w.year, w.kind === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ')) + '</div>' +
+          '<div class="text-gray-400">Added by ' + esc(w.by) + (w.at ? ' on ' + esc(new Date(w.at).toLocaleDateString()) : '') + '</div>' +
+          (owned ? '<div class="text-emerald-400">Already in the library.</div>' : '') +
+          '<div class="text-gray-400 pt-1">' + wishLinks(w) + '</div>' +
+        '</div>' +
+        '<button onclick="closeModal()" class="bg-white/10 rounded-full w-8 h-8 shrink-0">✕</button>' +
+      '</div>' +
+      '<div class="text-right"><button class="rounded px-4 py-1.5 bg-white/10 hover:bg-white/20" onclick="unwish(\'' + esc(w.ref) + '\')">Remove from wishlist</button></div>' +
+    '</div>';
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+// Searches TMDB after a short pause in typing. Answers that arrive after a newer search started are dropped.
+function wishSearch() {
+  var q = wishQuery();
   clearTimeout(wish.timer);
-  q = q.replace(/\s+/g, ' ').trim();
-  if (q.length < 2) { wish.results = null; wish.loading = false; wish.seq++; return drawWishResults(); }
-  if (wish.cache[q.toLowerCase()]) { wish.results = wish.cache[q.toLowerCase()]; wish.loading = false; wish.seq++; return drawWishResults(); }
+  wish.seq++;
+  wish.error = '';
+  if (q.length < 2) { wish.results = null; wish.loading = false; return drawWishResults(); }
+  var key = q.toLowerCase();
+  if (wish.cache[key]) { wish.results = wish.cache[key]; wish.loading = false; return drawWishResults(); }
   wish.loading = true;
   drawWishResults();
+  var seq = wish.seq;
   wish.timer = setTimeout(function () {
-    var seq = ++wish.seq;
     api('search', { q: q }).then(function (results) {
-      wish.cache[q.toLowerCase()] = results;
+      wish.cache[key] = results;
       if (seq !== wish.seq) return;
-      wish.results = results; wish.error = ''; wish.loading = false;
+      wish.results = results; wish.loading = false;
       drawWishResults();
     }, function (err) {
       if (seq !== wish.seq) return;
@@ -597,7 +691,7 @@ function wishSearch(q) {
   }, 350);
 }
 
-// "movie:603" / "tv:1396" refs of everything in the library, so search results can say what is already there.
+// "movie:603" / "tv:1396" refs of everything in the library, so the wishlist can say what is already there.
 function libraryRefs() {
   var refs = {};
   state.data.discs.forEach(function (d) {
@@ -612,44 +706,28 @@ function wishedRefs() {
   return refs;
 }
 
-function drawWishlist() {
-  if (!document.getElementById('wq')) return openWishlist();
-  drawWishResults();
-  var list = state.data.wishlist || [];
-  var owned = libraryRefs();
-  document.getElementById('wcount').textContent = 'On the wishlist (' + list.length + ')';
-  document.getElementById('wlist').innerHTML = list.length ? list.map(function (w) {
-    return '<li class="flex items-center gap-3 bg-white/5 rounded px-3 py-2">' + wishThumb(w) +
-      '<div class="mr-auto min-w-0"><div class="truncate">' + esc(w.title) + ' <span class="text-gray-400">' + esc(w.year) + ' · ' + (w.kind === 'tv' ? 'Series' : 'Movie') + '</span>' +
-        (owned[w.ref] ? ' <span class="text-xs bg-emerald-600 rounded px-1.5 py-0.5">in library</span>' : '') + '</div>' +
-        '<div class="text-xs text-gray-400">Added by ' + esc(w.by) + (w.at ? ' · ' + esc(new Date(w.at).toLocaleDateString()) : '') + ' · ' + wishLinks(w) + '</div></div>' +
-      '<button class="rounded px-3 py-1 text-xs bg-white/10 hover:bg-white/20" onclick="unwish(\'' + esc(w.ref) + '\')">Remove</button></li>';
-  }).join('') : '<li class="text-gray-400">Nothing yet. Search above to add a movie or series.</li>';
-}
-
+// TMDB results as a row of small posters above the wishlist, each with its add button.
 function drawWishResults() {
-  var box = document.getElementById('wresults');
-  if (!box) return;
-  if (wish.loading && !wish.results) { box.innerHTML = '<p class="text-gray-400">Searching…</p>'; return; }
-  if (wish.error) { box.innerHTML = '<p class="text-amber-400">' + esc(wish.error) + '</p>'; return; }
+  var box = document.getElementById('addResults');
+  var heading = '<h3 class="text-sm uppercase tracking-wide text-gray-400 mb-2">Add from TMDB</h3>';
+  if (wish.error) { box.innerHTML = heading + '<p class="text-sm text-amber-400">' + esc(wish.error) + '</p>'; return; }
+  if (wish.loading && !wish.results) { box.innerHTML = heading + '<p class="text-sm text-gray-400">Searching…</p>'; return; }
   if (!wish.results) { box.innerHTML = ''; return; }
-  if (!wish.results.length) { box.innerHTML = '<p class="text-gray-400">No movies or series found.</p>'; return; }
+  if (!wish.results.length) { box.innerHTML = heading + '<p class="text-sm text-gray-400">No movies or series found.</p>'; return; }
   var owned = libraryRefs();
   var wished = wishedRefs();
-  box.innerHTML = '<ul class="space-y-1.5' + (wish.loading ? ' opacity-60' : '') + '">' + wish.results.map(function (r) {
+  box.innerHTML = heading + '<div class="flex gap-3 overflow-x-auto pb-2' + (wish.loading ? ' opacity-60' : '') + '">' + wish.results.map(function (r) {
     var action = owned[r.ref] ? '<span class="text-xs text-emerald-400">In library</span>'
       : wished[r.ref] ? '<span class="text-xs text-sky-300">On wishlist</span>'
       : wish.adding[r.ref] ? '<span class="text-xs text-gray-400">Adding…</span>'
-      : '<button class="rounded px-3 py-1 text-xs bg-sky-600 hover:bg-sky-500" onclick="addWish(\'' + esc(r.ref) + '\')">+ Wishlist</button>';
-    return '<li class="flex items-center gap-3 bg-white/5 rounded px-3 py-2">' + wishThumb(r) +
-      '<div class="mr-auto min-w-0"><div class="truncate">' + esc(r.title) + ' <span class="text-gray-400">' + esc(r.year) + ' · ' + (r.kind === 'tv' ? 'Series' : 'Movie') + '</span></div>' +
-        '<div class="text-xs text-gray-400 line-clamp-2">' + esc(r.overview) + '</div></div>' + action + '</li>';
-  }).join('') + '</ul>';
-}
-
-function wishThumb(x) {
-  return x.poster ? '<img loading="lazy" decoding="async" class="w-10 rounded shrink-0" src="' + IMG + 'w92' + esc(x.poster) + '" alt="">'
-    : '<div class="w-10 h-[60px] rounded bg-white/10 shrink-0"></div>';
+      : '<button class="rounded px-2 py-1 text-xs bg-sky-600 hover:bg-sky-500" onclick="addWish(\'' + esc(r.ref) + '\')">+ Wishlist</button>';
+    var poster = r.poster ? '<img loading="lazy" decoding="async" class="poster w-full object-cover rounded" src="' + IMG + 'w185' + esc(r.poster) + '" alt="">'
+      : '<div class="poster w-full rounded bg-white/5 flex items-center justify-center p-2 text-center text-xs text-gray-400">' + esc(r.title) + '</div>';
+    return '<div class="w-24 sm:w-28 shrink-0 space-y-1" title="' + esc(r.overview) + '">' + poster +
+      '<div class="text-xs font-medium leading-tight line-clamp-2">' + esc(r.title) + '</div>' +
+      '<div class="text-[11px] text-gray-400">' + esc([r.year, r.kind === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ')) + '</div>' +
+      action + '</div>';
+  }).join('') + '</div>';
 }
 
 function wishLinks(w) {
@@ -667,6 +745,7 @@ function addWish(ref) {
 
 function unwish(ref) {
   state.data.wishlist = (state.data.wishlist || []).filter(function (w) { return w.ref !== ref; });
+  closeModal();
   redraw();
   busy();
   api('unwish', { ref: ref }).then(fresh, changeFailed);
@@ -797,6 +876,11 @@ function closeModal() {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('input', markSetFilters);
 });
+['wq', 'wKind', 'wBy', 'wSort'].forEach(function (id) {
+  document.getElementById(id).addEventListener('input', applyFilters);
+  document.getElementById(id).addEventListener('input', markSetFilters);
+});
+document.getElementById('wq').addEventListener('input', wishSearch);
 document.getElementById('detail').addEventListener('click', function (e) {
   var b = e.target.closest('[data-seen-key]');
   if (b) toggleSeen(b.dataset.seenKey, b.dataset.person, b.dataset.title);
