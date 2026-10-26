@@ -15,7 +15,7 @@
 
 ## How it works
 
-- **The Google Sheet is the source of truth.** Discs can be added from the app or typed into the familiar spreadsheet, edited there, and the app always shows its current state.
+- **The Google Sheet is the source of truth.** Discs can be added and removed from the app or typed into the familiar spreadsheet, edited there, and the app always shows its current state.
 - **Movie information comes from TMDB** (The Movie Database). It's fetched automatically for new or changed entries.
 - **Friends sign in with their Google account.** Only people the sheet is shared with can use the app.
 - **It runs for free:** the page is hosted on GitHub Pages, and a small Google Apps Script on the owner's account reads and writes the sheet. There are no servers to run and no costs.
