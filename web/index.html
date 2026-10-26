@@ -1175,7 +1175,9 @@ function digitalBlock(d) {
         '<button class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-sm">Save</button>' +
       '</form>'
     : '<div class="mt-1 flex flex-wrap items-center gap-3">' +
-        (d.link ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(d.link) + '">▶ Watch now</a>' : '') +
+        (d.link ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(d.link) + '">▶ Watch now</a>'
+          // No link found: the button opens the first source's search for the title instead.
+          : d.sources && d.sources.length ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(sourceSearch(d.sources[0], d.title)) + '">▶ Find on ' + esc(d.sources[0]) + '</a>' : '') +
         (watch && watch.link ? '<a ' + a.replace('text-sky-300', 'text-gray-400') + ' href="' + esc(watch.link) + '">Where to watch (TMDB)</a>' : '') +
         '<button class="text-gray-400 hover:text-gray-200 text-xs underline" onclick="editLink(\'' + esc(d.key) + '\')">' + (d.link ? 'Change streaming link…' : 'Add a streaming link…') + '</button>' +
       '</div>';
