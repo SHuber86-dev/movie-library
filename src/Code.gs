@@ -66,6 +66,7 @@ function doGet() {
  *   { action: 'search', token, q }                 -> TMDB movies and series, not the library
  *   { action: 'wish' | 'unwish', token, ref }      ref like "movie:603" or "tv:1396"
  *   { action: 'addDisc', token, ref, formats: [...], season, notes, unwish } -> a new disc owned by the signed-in user
+ *   { action: 'removeDisc', token, key, seenWhere } -> deletes the owner's disc from the inventory tab
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  */
 function doPost(e) {
@@ -92,6 +93,7 @@ function doPost(e) {
     if (req.action === 'wish') return json_({ ok: true, data: addWish(req.ref, user) });
     if (req.action === 'unwish') return json_({ ok: true, data: removeWish(req.ref, user) });
     if (req.action === 'addDisc') return json_({ ok: true, data: addDisc(req, user) });
+    if (req.action === 'removeDisc') return json_({ ok: true, data: removeDisc(req.key, req.seenWhere, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
     return json_({ ok: false, code: err.code || 'error', error: String(err.message || err) });
@@ -290,6 +292,38 @@ function addDisc(input, user) {
       var wishes = readTable_(wsh).rows;
       for (var i = wishes.length - 1; i >= 0; i--) if (wishes[i].ref === row.ref) wsh.deleteRow(i + 2);
     }
+    clearLibraryCache_();
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ---------- Removing discs ----------
+// Only the owner can remove a disc, and only while it is at their place, so nobody loses track of a lent-out disc.
+// Its row leaves the inventory tab; its Metadata row stays, so the key is never handed to a new disc. The Loans tab
+// gets a last "removed" line as a record, and open requests for the disc are closed.
+
+function removeDisc(key, seenWhere, user) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var inv = readInventory_();
+    var row = inv.rows.filter(function (r) { return r.key === key && r.title; })[0];
+    if (!row) throw new Error('Disc not found. Reload the page.');
+    var holder = row.where || row.owner;
+    if (seenWhere && seenWhere !== holder) {
+      clearLibraryCache_();
+      throw new Error(row.title + ' is now at ' + holder + '. The page has been refreshed, please try again.');
+    }
+    if (user.name !== row.owner) throw new Error('Only ' + row.owner + ' can remove this disc.');
+    if (holder !== row.owner) throw new Error(row.title + ' is at ' + holder + '. Mark it returned before removing it.');
+    inv.sheet.deleteRow(row.rowIndex);
+    sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([key, row.title, holder, '', new Date(), user.name, 'removed from library']);
+    var rsh = sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
+    readTable_(rsh).rows.forEach(function (r, i) {
+      if (r.disc === key && r.status === 'open') setRequestStatus_(rsh, i + 2, 'removed', user.name);
+    });
     clearLibraryCache_();
     return getLibrary_(user);
   } finally {

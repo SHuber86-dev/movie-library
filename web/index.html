@@ -1004,6 +1004,18 @@ function copyBlock(d) {
       (d.where !== d.owner ? '<button class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-sm" onclick="giveBack(\'' + esc(d.key) + '\')">Mark returned</button>' : '') +
     '</div>';
   }
+  // Removing takes two clicks: the button only asks, and the disc goes once the question is answered with yes.
+  if (me === d.owner && d.where === d.owner) {
+    actions += state.removing === d.key
+      ? '<div class="mt-2 rounded border border-red-500/40 bg-red-500/10 p-2 space-y-2">' +
+          '<div>Remove ' + esc(d.title) + ' (' + esc(formatBadges([d])) + ') from the library? Its row is deleted from the sheet' +
+          (reqs.length ? ' and the open requests for it are closed' : '') + '.</div>' +
+          '<div class="flex flex-wrap gap-2">' +
+            '<button class="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm" onclick="askRemove(null)">Keep it</button>' +
+            '<button class="bg-red-600 hover:bg-red-500 rounded px-3 py-1 text-sm" onclick="removeDisc(\'' + esc(d.key) + '\')">Yes, remove it</button>' +
+          '</div></div>'
+      : '<div class="mt-2"><button class="text-red-300 hover:text-red-200 text-xs underline" onclick="askRemove(\'' + esc(d.key) + '\')">Remove from library…</button></div>';
+  }
   if (me !== d.where) {
     actions += mine
       ? '<div class="flex flex-wrap items-center gap-2 mt-2 text-sky-300">You asked for this disc' + (mine.note ? ' (“' + esc(mine.note) + '”)' : '') + '.' +
@@ -1039,6 +1051,21 @@ function giveBack(key) {
   api('return', { key: key, seenWhere: discByKey(key).where }).then(fresh, changeFailed);
 }
 
+function askRemove(key) {
+  state.removing = key;
+  if (state.openKey) openGroup(state.openKey);
+}
+
+function removeDisc(key) {
+  var d = discByKey(key);
+  closeModal();
+  busy();
+  api('removeDisc', { key: key, seenWhere: d.where }).then(function (data) {
+    fresh(data);
+    alertBox(d.title + ' was removed from the library.');
+  }, changeFailed);
+}
+
 function discByKey(key) {
   return state.data.discs.filter(function (d) { return d.key === key; })[0];
 }
@@ -1047,6 +1074,7 @@ function busy() { document.getElementById('status').textContent = 'Saving…'; }
 
 function closeModal() {
   state.openKey = null;
+  state.removing = null;
   state.backKey = null;
   document.getElementById('modal').classList.add('hidden');
 }

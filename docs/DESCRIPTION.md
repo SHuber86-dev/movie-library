@@ -11,11 +11,12 @@
 - **Request a disc:** ask for a disc you don't have, or ask for your own disc back, with an optional note like "for Saturday". A Requests overview lists what you've been asked to bring, grouped by person, and what you've asked others for, so the next time you meet you know which discs to grab.
 - **Shared wishlist:** search any movie or series on TMDB (or paste an IMDb link) and add it to a wishlist everyone sees. It's kept apart from the library, shows who added what, and marks titles you already own.
 - **Add a disc from search:** the library's search box also finds movies and series on TMDB. Pick one, tick the formats (and the season for a series), and it's added to the sheet as your disc, poster and all. If it was on the wishlist, it can come off in the same step, and a wishlist title can be moved to the library straight from its details.
+- **Remove a disc:** the owner can remove a disc they have at home from its details. A second "Yes, remove it" click is needed, so nothing goes by accident; its lending history stays in the sheet.
 - **My shelf:** one view shows what you own, what you've lent out and what you're currently borrowing.
 
 ## How it works
 
-- **The Google Sheet is the source of truth.** Discs can be added from the app or typed into the familiar spreadsheet, edited there, and the app always shows its current state.
+- **The Google Sheet is the source of truth.** Discs can be added and removed from the app or typed into the familiar spreadsheet, edited there, and the app always shows its current state.
 - **Movie information comes from TMDB** (The Movie Database). It's fetched automatically for new or changed entries.
 - **Friends sign in with their Google account.** Only people the sheet is shared with can use the app.
 - **It runs for free:** the page is hosted on GitHub Pages, and a small Google Apps Script on the owner's account reads and writes the sheet. There are no servers to run and no costs.
