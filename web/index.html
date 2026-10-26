@@ -1166,7 +1166,7 @@ function digitalBlock(d) {
   findLink(d);
   var sources = (d.sources || []).map(function (s) {
     var tick = watch && offers(watch.providers, s) ? ' <span class="text-emerald-400" title="Available there according to TMDB">✓</span>' : '';
-    return (d.link ? esc(s) : '<a ' + a + ' href="' + esc(sourceSearch(s, d.title)) + '">' + esc(s) + '</a>') + tick;
+    return (d.link ? esc(s) : '<a ' + a + ' href="' + esc(sourceSearch(s, d)) + '">' + esc(s) + '</a>') + tick;
   }).join(', ');
   var link = state.editingLink === d.key
     ? '<form class="mt-2 flex flex-wrap gap-2" onsubmit="saveLink(event, \'' + esc(d.key) + '\')">' +
@@ -1177,7 +1177,7 @@ function digitalBlock(d) {
     : '<div class="mt-1 flex flex-wrap items-center gap-3">' +
         (d.link ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(d.link) + '">▶ Watch now</a>'
           // No link found: the button opens the first source's search for the title instead.
-          : d.sources && d.sources.length ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(sourceSearch(d.sources[0], d.title)) + '">▶ Find on ' + esc(d.sources[0]) + '</a>' : '') +
+          : d.sources && d.sources.length ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(sourceSearch(d.sources[0], d)) + '">▶ Find on ' + esc(d.sources[0]) + '</a>' : '') +
         (watch && watch.link ? '<a ' + a.replace('text-sky-300', 'text-gray-400') + ' href="' + esc(watch.link) + '">Where to watch (TMDB)</a>' : '') +
         '<button class="text-gray-400 hover:text-gray-200 text-xs underline" onclick="editLink(\'' + esc(d.key) + '\')">' + (d.link ? 'Change streaming link…' : 'Add a streaming link…') + '</button>' +
       '</div>';
@@ -1223,8 +1223,11 @@ function offers(providers, source) {
   return providers.some(function (p) { return re ? re.test(p) : p.toLowerCase() === source.toLowerCase(); });
 }
 
-function sourceSearch(source, title) {
-  return (SOURCE_SEARCH[source] || JUSTWATCH_SEARCH) + encodeURIComponent(title.replace(/ – Season \d+$/, ''));
+// The searches are the German stores', so they look for the German title when TMDB has one.
+function sourceSearch(source, d) {
+  var i = d.meta && d.meta.items && d.meta.items[0];
+  var title = (i && i.germanTitle) || d.title;
+  return (SOURCE_SEARCH[source] || JUSTWATCH_SEARCH) + encodeURIComponent(d.type.indexOf('TV') === 0 ? title.replace(/ – .*$/, '') : title); // a season's search finds the series
 }
 
 function isLink(url) { return /^https?:\/\/[^\s/?#]+\.[^\s]*$/i.test(url); }
