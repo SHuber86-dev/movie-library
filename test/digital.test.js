@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { fakeProperties } = require('./fakes');
-const { discRow, cleanSources, isDigital, visibleDiscs } = require('../src/Code.gs');
+const { discRow, cleanSources, cleanLink, isDigital, visibleDiscs } = require('../src/Code.gs');
 
 // A tiny in-memory sheet with the parts of the Apps Script Range API the code uses.
 function fakeSheet(rows) {
@@ -104,4 +104,32 @@ test('a digital title cannot be lent or requested, and others are told it does n
   assert.strictEqual(tabs.Requests.values.length, 1);
   assert.strictEqual(ctx.removeDisc('d-0008', 'Matthias', matthias), 'fresh library');
   assert.strictEqual(inv.values.length, 2);
+});
+
+test('a digital title can carry a streaming link, in a link column added when first needed', () => {
+  const { ctx, inv } = load();
+  ctx.addDisc({ ref: 'movie:603', digital: true, sources: ['Netflix'], link: ' https://www.netflix.com/title/20557937 ' }, steffen);
+  assert.deepStrictEqual(inv.values[0].slice(8), ['source', 'link']);
+  assert.deepStrictEqual(inv.values[3].slice(8), ['Netflix', 'https://www.netflix.com/title/20557937']);
+});
+
+test('the owner sets and clears the link of their digital title; nobody else can, and discs have none', () => {
+  const { ctx, inv } = load();
+  ctx.setLink('d-0008', 'https://tv.apple.com/movie/alien', matthias);
+  assert.strictEqual(inv.values[0][8], 'link');
+  assert.strictEqual(inv.values[2][8], 'https://tv.apple.com/movie/alien');
+  ctx.setLink('d-0008', '', matthias);
+  assert.strictEqual(inv.values[2][8], '');
+  assert.throws(() => ctx.setLink('d-0008', 'https://x.example/a', steffen), /not found/);
+  assert.throws(() => ctx.setLink('d-0007', 'https://x.example/a', matthias), /not found/);
+});
+
+test('streaming links: empty or a web address, nothing else', () => {
+  assert.strictEqual(cleanLink(''), '');
+  assert.strictEqual(cleanLink(null), '');
+  assert.strictEqual(cleanLink('https://www.primevideo.com/detail/0ABC'), 'https://www.primevideo.com/detail/0ABC');
+  assert.throws(() => cleanLink('javascript:alert(1)'), /web address/);
+  assert.throws(() => cleanLink('netflix.com/title/1'), /web address/);
+  assert.throws(() => cleanLink('https://a.com/' + 'x'.repeat(600)), /web address/);
+  assert.throws(() => discRow({ ref: 'movie:603', digital: true, sources: ['Netflix'], link: 'ftp://x.com' }), /web address/);
 });

@@ -925,6 +925,15 @@ function drawResults(view) {
 var ADD_PREFIX = 'add:';
 var FORMATS = ['HD Blu Ray', '4k Blu Ray', '3D Blu Ray'];
 var SOURCES = ['Netflix', 'Amazon Prime Video', 'Apple TV', 'Disney+', 'Google Play / YouTube', 'Sky / WOW', 'Rakuten TV', 'Paramount+'];
+// Where each source searches for a title; any other source searches JustWatch, which links on to the platform.
+var SOURCE_SEARCH = {
+  'Netflix': 'https://www.netflix.com/search?q=',
+  'Amazon Prime Video': 'https://www.primevideo.com/search?phrase=',
+  'Apple TV': 'https://tv.apple.com/search?term=',
+  'Disney+': 'https://www.disneyplus.com/search?q=',
+  'Google Play / YouTube': 'https://play.google.com/store/search?c=movies&q='
+};
+var JUSTWATCH_SEARCH = 'https://www.justwatch.com/de/Suche?q=';
 
 function openAdd(ref) {
   var r = finder.found[ref];
@@ -962,7 +971,9 @@ function openAdd(ref) {
           '<input type="checkbox" name="source" value="' + esc(f) + '"> ' + esc(f) + '</label>';
       }).join('') +
         '<input id="addOther" maxlength="40" placeholder="Other, e.g. Maxdome" class="w-44 ' + field + '">' +
-      '</div><span class="block text-xs text-gray-400 mt-1">Digital titles are only shown to you, since they can\'t be lent.</span></fieldset>' +
+      '</div><label class="block mt-3"><span class="block text-gray-400 mb-1.5">Streaming link (optional)</span>' +
+        '<input id="addLink" type="url" maxlength="500" placeholder="https://… copied from the platform" class="w-full ' + field + '">' +
+        '<span class="block text-xs text-gray-400 mt-1">Without one, each source opens that platform\'s search for the title.</span></label><span class="block text-xs text-gray-400 mt-1">Digital titles are only shown to you, since they can\'t be lent.</span></fieldset>' +
       (r.kind === 'tv' ? '<label class="block"><span class="block text-gray-400 mb-1.5">Season</span>' +
         '<input id="addSeason" type="number" min="1" max="99" inputmode="numeric" placeholder="e.g. 1" class="w-28 ' + field + '">' +
         '<span class="block text-xs text-gray-400 mt-1">Leave empty for a box set of the whole series.</span></label>' : '') +
@@ -1001,7 +1012,8 @@ function addDisc(e, ref) {
   var formats = ticked('format');
   var sources = ticked('source');
   var other = document.getElementById('addOther').value.trim();
-  var problem = digital ? (!sources.length && !other && 'Pick at least one source.') : (!formats.length && 'Pick at least one format.');
+  var link = document.getElementById('addLink').value.trim();
+  var problem = digital ? (!sources.length && !other && 'Pick at least one source.') || (link && !isLink(link) && 'The streaming link must start with https://') : (!formats.length && 'Pick at least one format.');
   if (problem) {
     var err = document.getElementById('addError');
     err.textContent = problem;
@@ -1012,7 +1024,7 @@ function addDisc(e, ref) {
   var unwish = document.getElementById('addUnwish');
   var title = finder.found[ref].title;
   var params = { ref: ref, season: season ? season.value : '', notes: document.getElementById('addNotes').value, unwish: !!(unwish && unwish.checked) };
-  if (digital) { params.digital = true; params.sources = sources; params.other = other; } else params.formats = formats;
+  if (digital) { params.digital = true; params.sources = sources; params.other = other; params.link = link; } else params.formats = formats;
   closeModal();
   finder.adding[ref] = true;
   drawResults('library');
@@ -1142,11 +1154,48 @@ function digitalBlock(d) {
           '<button class="bg-red-600 hover:bg-red-500 rounded px-3 py-1 text-sm" onclick="removeDisc(\'' + esc(d.key) + '\')">Yes, remove it</button>' +
         '</div></div>'
     : '<div class="mt-2"><button class="text-red-300 hover:text-red-200 text-xs underline" onclick="askRemove(\'' + esc(d.key) + '\')">Remove from library…</button></div>';
+  var a = 'class="text-sky-300 hover:text-sky-200 underline" target="_blank" rel="noopener noreferrer"';
+  // Your own link opens the title itself; without one, each source opens its platform's search for the title.
+  var sources = (d.sources || []).map(function (s) {
+    return d.link ? esc(s) : '<a ' + a + ' href="' + esc(sourceSearch(s, d.title)) + '">' + esc(s) + '</a>';
+  }).join(', ');
+  var link = state.editingLink === d.key
+    ? '<form class="mt-2 flex flex-wrap gap-2" onsubmit="saveLink(event, \'' + esc(d.key) + '\')">' +
+        '<input id="linkInput" type="url" maxlength="500" value="' + esc(d.link || '') + '" placeholder="https://… copied from the platform" class="flex-1 min-w-0 bg-white/5 rounded px-3 py-1 outline-none focus:ring-1 ring-white/30">' +
+        '<button type="button" class="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm" onclick="editLink(null)">Cancel</button>' +
+        '<button class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-sm">Save</button>' +
+      '</form>'
+    : '<div class="mt-1 flex flex-wrap items-center gap-3">' +
+        (d.link ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(d.link) + '">▶ Watch now</a>' : '') +
+        '<button class="text-gray-400 hover:text-gray-200 text-xs underline" onclick="editLink(\'' + esc(d.key) + '\')">' + (d.link ? 'Change streaming link…' : 'Add a streaming link…') + '</button>' +
+      '</div>';
   return '<div class="rounded-lg bg-white/5 p-3 mb-2 text-sm">' +
-    '<div class="flex items-center gap-1.5"><span class="text-sky-300">' + CLOUD_ICON + '</span><span class="font-medium">Digital</span>' +
-      (d.sources && d.sources.length ? ' · ' + esc(d.sources.join(', ')) : '') + (d.notes && d.type.indexOf('collection') < 0 ? ' · ' + esc(d.notes) : '') + '</div>' +
+    '<div class="flex items-center gap-1.5 flex-wrap"><span class="text-sky-300">' + CLOUD_ICON + '</span><span class="font-medium">Digital</span>' +
+      (sources ? ' · ' + sources : '') + (d.notes && d.type.indexOf('collection') < 0 ? ' · ' + esc(d.notes) : '') + '</div>' +
     '<div class="text-gray-400">Owner: ' + esc(d.owner) + ' · Only you can see this copy, since it can\'t be lent.</div>' +
-    remove + '</div>';
+    link + remove + '</div>';
+}
+
+function sourceSearch(source, title) {
+  return (SOURCE_SEARCH[source] || JUSTWATCH_SEARCH) + encodeURIComponent(title.replace(/ – Season \d+$/, ''));
+}
+
+function isLink(url) { return /^https?:\/\/[^\s/?#]+\.[^\s]*$/i.test(url); }
+
+function editLink(key) {
+  state.editingLink = key;
+  if (state.openKey) openGroup(state.openKey);
+  var input = document.getElementById('linkInput');
+  if (input) input.focus();
+}
+
+function saveLink(e, key) {
+  e.preventDefault();
+  var link = document.getElementById('linkInput').value.trim();
+  if (link && !isLink(link)) { alertBox('The streaming link must start with https://'); return; }
+  state.editingLink = null;
+  busy();
+  api('setLink', { key: key, link: link }).then(fresh, changeFailed);
 }
 
 function lend(key) {
@@ -1187,6 +1236,7 @@ function busy() { document.getElementById('status').textContent = 'Saving…'; }
 function closeModal() {
   state.openKey = null;
   state.removing = null;
+  state.editingLink = null;
   state.backKey = null;
   document.getElementById('modal').classList.add('hidden');
 }
