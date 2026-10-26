@@ -21,6 +21,8 @@ The app has two parts: the **page** at `https://shuber86-dev.github.io/movie-lib
    - `RAPIDAPI_KEY` = your Streaming Availability key from RapidAPI (optional), so digital titles get a direct **Watch now** link
    - `REGION` = `DE` (optional, the default), the country for streaming links and availability
 
+   Links are looked up when a digital title is opened. To fill them in for all titles at once, run `fillLinks` from the Editor; it stops after about 5 minutes and logs how many are left, so run it again until it says done.
+
    The script adds a few properties of its own later (`rev`, `libRev`, `refreshAgain`). Leave them alone: they let the app tell new data from old.
 
 ## 3. Run setup once

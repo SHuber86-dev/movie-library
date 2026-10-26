@@ -163,6 +163,7 @@ test('streaming links found: the first owned source that offers the title, or th
   assert.strictEqual(pickItunesLink(hits, false, '1999'), 'https://itunes.apple.com/de/movie/matrix/id2');
   assert.strictEqual(pickItunesLink(hits, false, ''), 'https://itunes.apple.com/de/movie/the-matrix-reloaded/id1');
   assert.strictEqual(pickItunesLink([], true, '2008'), '');
+  assert.strictEqual(pickItunesLink(hits, false, '1985'), '', 'a film from another year is a different film');
 });
 
 test('Apple links open the region\'s store', () => {
