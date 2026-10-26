@@ -1148,19 +1148,33 @@ function findLink(key, user) {
   var row = readInventory_().rows.filter(function (r) { return r.key === key && r.title && r.digital && r.owner === user.name; })[0];
   if (!row) throw new Error('Digital title not found. Reload the page.');
   var cache = CacheService.getScriptCache();
-  var m = readMetadata_()[key];
-  var ref = m && String(m.tmdb_ids || '').split(',')[0].trim();
-  if (row.link || !ref || cache.get('nolink:' + key)) return { link: row.link };
-  var link = '';
-  try {
-    link = streamLink_(ref, row);
-  } catch (e) {
-    console.warn('Streaming link for ' + row.title + ': ' + e.message);
+  if (row.link || cache.get('nolink:' + key)) return { link: row.link };
+  var found = lookupLink_(row, readMetadata_()[key]);
+  if (!found.link && !found.failed) cache.put('nolink:' + key, '1', 24 * 3600); // a failed call is tried again next time
+  return { link: found.link ? saveFoundLink_(key, found.link) : '' };
+}
+
+/**
+ * Run from the editor (or on a timer) to look up the links of all digital titles that have none yet, a few seconds
+ * apart so the APIs don't refuse; it stops before the Apps Script time limit, so run it again until it says done.
+ */
+function fillLinks() {
+  var started = Date.now();
+  var meta = readMetadata_();
+  var todo = readInventory_().rows.filter(function (r) { return r.title && r.digital && !r.link; });
+  var found = 0, failed = 0, done = 0;
+  for (var i = 0; i < todo.length && Date.now() - started < 4.5 * 60000; i++, done++) {
+    var hit = lookupLink_(todo[i], meta[todo[i].key]);
+    if (hit.link) { saveFoundLink_(todo[i].key, hit.link); found++; }
+    if (hit.failed) failed++;
+    Utilities.sleep(3000);
   }
-  if (!link) {
-    cache.put('nolink:' + key, '1', 24 * 3600);
-    return { link: '' };
-  }
+  console.log('Links found: ' + found + ' of ' + done + ' checked' + (failed ? ', ' + failed + ' failed calls' : '') +
+    (done < todo.length ? '. ' + (todo.length - done) + ' left, run fillLinks again.' : '. Done.'));
+}
+
+/** Saves a found link unless one was pasted meanwhile; returns the link the row now has. */
+function saveFoundLink_(key, link) {
   write_(true, function () {
     ensureColumn_(LINK_HEADER);
     var inv = readInventory_();
@@ -1168,31 +1182,48 @@ function findLink(key, user) {
     if (now && !now.link) inv.sheet.getRange(now.rowIndex, inv.cols.link + 1).setValue(link); // a pasted link wins
     else if (now) link = now.link;
   });
-  return { link: link };
+  return link;
 }
 
-function streamLink_(ref, row) {
+/** { link, failed }: failed when a call errored (e.g. a rate limit), so a miss isn't remembered. */
+function lookupLink_(row, m) {
+  var ref = m && String(m.tmdb_ids || '').split(',')[0].trim();
+  if (!ref) return { link: '', failed: false };
   var p = ref.split(':'); // "movie:603" or "tv:1396:2"
   var props = PropertiesService.getScriptProperties();
   var country = (props.getProperty('REGION') || 'DE').toLowerCase();
   var apiKey = props.getProperty('RAPIDAPI_KEY');
   var link = '';
+  var failed = false;
+  var get = function (url, headers) {
+    try {
+      var res = UrlFetchApp.fetch(url, { headers: headers || {}, muteHttpExceptions: true });
+      if (res.getResponseCode() === 200) return JSON.parse(res.getContentText());
+      if (res.getResponseCode() !== 404) throw new Error('HTTP ' + res.getResponseCode());
+    } catch (e) {
+      failed = true;
+      console.warn('Streaming link for ' + row.title + ': ' + e.message + ' from ' + url.split('?')[0]);
+    }
+    return null;
+  };
   if (apiKey && row.sources.some(function (s) { return SA_SERVICES[s]; })) {
-    var res = UrlFetchApp.fetch('https://streaming-availability.p.rapidapi.com/shows/' + p[0] + '/' + p[1] + '?country=' + country, {
-      headers: { 'X-RapidAPI-Key': apiKey, 'X-RapidAPI-Host': 'streaming-availability.p.rapidapi.com' },
-      muteHttpExceptions: true
-    });
-    if (res.getResponseCode() === 200) link = pickStreamLink(JSON.parse(res.getContentText()), country, row.sources);
-    else if (res.getResponseCode() !== 404) throw new Error('Streaming Availability ' + res.getResponseCode());
+    var show = get('https://streaming-availability.p.rapidapi.com/shows/' + p[0] + '/' + p[1] + '?country=' + country,
+      { 'X-RapidAPI-Key': apiKey, 'X-RapidAPI-Host': 'streaming-availability.p.rapidapi.com' });
+    link = pickStreamLink(show, country, row.sources);
   }
   if (!link && row.sources.indexOf('Apple TV') >= 0) {
+    // The German store often knows a film only by its German title, so that is tried too.
     var tv = p[0] === 'tv';
-    var title = String(parseSeason(row.title).show || row.title);
-    var it = UrlFetchApp.fetch('https://itunes.apple.com/search?country=' + country + '&media=' + (tv ? 'tvShow&entity=tvSeason' : 'movie&entity=movie') +
-      '&limit=10&term=' + encodeURIComponent(title), { muteHttpExceptions: true });
-    if (it.getResponseCode() === 200) link = localLink(pickItunesLink(JSON.parse(it.getContentText()).results, tv, row.yearRaw), country);
+    var item = {};
+    try { item = JSON.parse(m.data_json).items[0] || {}; } catch (e) {}
+    var titles = [parseSeason(row.title).show || row.title, (item.germanTitle || '').replace(/ – .*$/, '')].filter(function (t, i, a) { return t && a.indexOf(t) === i; });
+    for (var i = 0; i < titles.length && !link; i++) {
+      var found = get('https://itunes.apple.com/search?country=' + country + '&media=' + (tv ? 'tvShow&entity=tvSeason' : 'movie&entity=movie') +
+        '&limit=10&term=' + encodeURIComponent(titles[i]));
+      link = localLink(pickItunesLink(found && found.results, tv, row.yearRaw), country);
+    }
   }
-  return link;
+  return { link: link, failed: failed && !link };
 }
 
 /** The address of the title on the first owned source that offers it, from a Streaming Availability show. */
@@ -1211,11 +1242,11 @@ function localLink(url, country) {
   return m ? m[1] + '/' + country + m[2] : url;
 }
 
-/** An iTunes search hit for the title: the one from the same year when there is one, else the first. */
+/** An iTunes search hit for the title from the same year (give or take one, for later releases); the first without a year. */
 function pickItunesLink(results, tv, year) {
   results = (results || []).filter(function (x) { return /^https:\/\//.test(tv ? x.collectionViewUrl || '' : x.trackViewUrl || ''); });
   var y = String(year || '').slice(0, 4);
-  var hit = results.filter(function (x) { return y && String(x.releaseDate || '').slice(0, 4) === y; })[0] || results[0];
+  var hit = y ? results.filter(function (x) { return Math.abs(+String(x.releaseDate || '').slice(0, 4) - y) <= 1; })[0] : results[0];
   return hit ? (tv ? hit.collectionViewUrl : hit.trackViewUrl) : '';
 }
 
