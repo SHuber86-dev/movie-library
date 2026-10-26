@@ -164,3 +164,14 @@ test('streaming links found: the first owned source that offers the title, or th
   assert.strictEqual(pickItunesLink(hits, false, ''), 'https://itunes.apple.com/de/movie/the-matrix-reloaded/id1');
   assert.strictEqual(pickItunesLink([], true, '2008'), '');
 });
+
+test('Apple links open the region\'s store', () => {
+  const { localLink, pickStreamLink } = require('../src/Code.gs');
+  assert.strictEqual(localLink('https://tv.apple.com/us/movie/the-matrix/umc.cmc.1', 'de'), 'https://tv.apple.com/de/movie/the-matrix/umc.cmc.1');
+  assert.strictEqual(localLink('https://tv.apple.com/movie/umc.cmc.1', 'de'), 'https://tv.apple.com/de/movie/umc.cmc.1');
+  assert.strictEqual(localLink('https://itunes.apple.com/us/movie/matrix/id2?uo=4', 'de'), 'https://itunes.apple.com/de/movie/matrix/id2?uo=4');
+  assert.strictEqual(localLink('https://www.netflix.com/title/1', 'de'), 'https://www.netflix.com/title/1');
+  assert.strictEqual(localLink('', 'de'), '');
+  const show = { streamingOptions: { de: [{ service: { id: 'apple' }, link: 'https://tv.apple.com/us/movie/x/umc.1' }] } };
+  assert.strictEqual(pickStreamLink(show, 'de', ['Apple TV']), 'https://tv.apple.com/de/movie/x/umc.1');
+});
