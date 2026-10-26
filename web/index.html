@@ -50,7 +50,7 @@
         <option value="">Any status</option><option value="home">At owner</option><option value="out">Lent out</option><option value="mine">My shelf</option><option value="requested">Requested</option>
       </select>
       <select id="fFormat" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
-        <option value="">All formats</option><option>HD Blu Ray</option><option>4k Blu Ray</option><option>3D Blu Ray</option>
+        <option value="">All formats</option><option>HD Blu Ray</option><option>4k Blu Ray</option><option>3D Blu Ray</option><option>Digital</option>
       </select>
       <select id="fType" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
         <option value="">All types</option><option>Film</option><option>Film collection</option><option value="TV">TV</option>
@@ -357,7 +357,7 @@ function applyFilters() {
   var shown = state.groups.filter(matches);
   var discCount = shown.reduce(function (n, g) { return n + g.discs.length; }, 0);
   document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles · ' +
-    discCount + ' of ' + state.data.discs.length + ' discs' + (state.stale ? ' · updating…' : '') +
+    discCount + ' of ' + state.data.discs.length + ' copies' + (state.stale ? ' · updating…' : '') +
     (Object.keys(readOutbox()).length ? ' · saving ticks…' : '');
   document.getElementById('grid').innerHTML = shown.map(card).join('');
   drawResults('library');
@@ -395,7 +395,8 @@ function card(g) {
     : '<div class="poster w-full flex items-center justify-center p-3 text-center text-sm text-gray-400 bg-white/5">' + esc(d.title) + '</div>';
   return '<button class="text-left group self-start" onclick="openGroup(\'' + esc(g.key) + '\')">' +
     '<div class="relative rounded-lg overflow-hidden ring-1 ring-white/10 group-hover:ring-white/40 transition">' + poster +
-      (g.items.length > 1 ? '<span class="absolute top-2 left-2 text-xs bg-black/70 rounded px-1.5 py-0.5">' + g.items.length + ' films</span>' : '') +
+      '<div class="absolute top-2 left-2 flex items-center gap-1">' + mediaIcons(g.discs) +
+        (g.items.length > 1 ? '<span class="text-xs bg-black/70 rounded px-1.5 py-0.5">' + g.items.length + ' films</span>' : '') + '</div>' +
       (out ? '<span class="absolute top-2 right-2 text-xs bg-amber-500 text-black rounded px-1.5 py-0.5">lent</span>' : '') +
       (requested ? '<span class="absolute bottom-2 right-2 text-xs bg-sky-500 text-black rounded px-1.5 py-0.5">requested</span>' : '') +
       (groupSeenBy(g, state.data.user.name) ? '<span class="absolute bottom-2 left-2 text-xs bg-emerald-600 rounded px-1.5 py-0.5">✓ seen</span>' : '') +
@@ -403,6 +404,18 @@ function card(g) {
     '<div class="mt-1 sm:mt-1.5 text-xs sm:text-sm font-medium leading-tight line-clamp-2">' + esc(d.title) + '</div>' +
     '<div class="text-[11px] sm:text-xs text-gray-400 truncate">' + esc(d.years[0] || '') + ' · ' + esc(formatBadges(g.discs)) + '</div>' +
   '</button>';
+}
+
+// Tiny disc and cloud icons: what kind of copies a card stands for. A title owned both ways gets both.
+var DISC_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg>';
+var CLOUD_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 9.5 4.25 4.25 0 0 0 7 18z"/></svg>';
+
+function mediaIcons(discs) {
+  var digital = discs.some(function (d) { return d.digital; });
+  var disc = discs.some(function (d) { return !d.digital; });
+  return '<span class="flex items-center gap-1 bg-black/70 rounded px-1 py-1 text-gray-100">' +
+    (disc ? '<span title="Disc" aria-label="Disc">' + DISC_ICON + '</span>' : '') +
+    (digital ? '<span title="Digital" aria-label="Digital">' + CLOUD_ICON + '</span>' : '') + '</span>';
 }
 
 function formatBadges(discs) {
@@ -861,6 +874,7 @@ function drawResults(view) {
 
 var ADD_PREFIX = 'add:';
 var FORMATS = ['HD Blu Ray', '4k Blu Ray', '3D Blu Ray'];
+var SOURCES = ['Netflix', 'Amazon Prime Video', 'Apple TV', 'Disney+', 'Google Play / YouTube', 'Sky / WOW', 'Rakuten TV', 'Paramount+'];
 
 function openAdd(ref) {
   var r = finder.found[ref];
@@ -880,22 +894,32 @@ function openAdd(ref) {
           '<h2 class="text-2xl font-semibold">' + esc(r.title) + '</h2>' +
           '<div class="text-gray-400">' + esc([r.year, r.kind === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ')) + '</div>' +
           (copies.length ? '<div class="text-emerald-400">Already in the library: ' + esc(copies.map(function (d) {
-            return d.title + ' (' + formatBadges([d]) + ', ' + d.owner + ')';
+            return d.title + ' (' + (d.digital ? 'Digital' : formatBadges([d])) + ', ' + d.owner + ')';
           }).join('; ')) + '</div>' : '') +
         '</div>' +
         '<button type="button" onclick="closeModal()" class="bg-white/10 rounded-full w-8 h-8 shrink-0">✕</button>' +
       '</div>' +
-      '<fieldset><legend class="text-gray-400 mb-1.5">Format</legend><div class="flex flex-wrap gap-2">' + FORMATS.map(function (f, i) {
+      '<fieldset><legend class="text-gray-400 mb-1.5">I own it</legend><div class="flex flex-wrap gap-2">' +
+        '<label class="flex items-center gap-1.5 bg-white/5 rounded px-3 py-1.5 cursor-pointer"><input type="radio" name="medium" value="disc" checked onchange="pickMedium()"> ' + DISC_ICON + ' On disc</label>' +
+        '<label class="flex items-center gap-1.5 bg-white/5 rounded px-3 py-1.5 cursor-pointer"><input type="radio" name="medium" value="digital" onchange="pickMedium()"> ' + CLOUD_ICON + ' Digitally</label>' +
+      '</div></fieldset>' +
+      '<fieldset id="addFormats"><legend class="text-gray-400 mb-1.5">Format</legend><div class="flex flex-wrap gap-2">' + FORMATS.map(function (f, i) {
         return '<label class="flex items-center gap-1.5 bg-white/5 rounded px-3 py-1.5 cursor-pointer">' +
           '<input type="checkbox" name="format" value="' + esc(f) + '"' + (i === 0 ? ' checked' : '') + '> ' + esc(f.replace('4k', '4K')) + '</label>';
       }).join('') + '</div></fieldset>' +
+      '<fieldset id="addSources" hidden><legend class="text-gray-400 mb-1.5">Source</legend><div class="flex flex-wrap gap-2">' + SOURCES.map(function (f) {
+        return '<label class="flex items-center gap-1.5 bg-white/5 rounded px-3 py-1.5 cursor-pointer">' +
+          '<input type="checkbox" name="source" value="' + esc(f) + '"> ' + esc(f) + '</label>';
+      }).join('') +
+        '<input id="addOther" maxlength="40" placeholder="Other, e.g. Maxdome" class="w-44 ' + field + '">' +
+      '</div><span class="block text-xs text-gray-400 mt-1">Digital titles are only shown to you, since they can\'t be lent.</span></fieldset>' +
       (r.kind === 'tv' ? '<label class="block"><span class="block text-gray-400 mb-1.5">Season</span>' +
         '<input id="addSeason" type="number" min="1" max="99" inputmode="numeric" placeholder="e.g. 1" class="w-28 ' + field + '">' +
         '<span class="block text-xs text-gray-400 mt-1">Leave empty for a box set of the whole series.</span></label>' : '') +
       '<label class="block"><span class="block text-gray-400 mb-1.5">Note (optional)</span>' +
         '<input id="addNotes" maxlength="200" placeholder="e.g. Steelbook, UK release" class="w-full ' + field + '"></label>' +
       (wished ? '<label class="flex items-center gap-2"><input id="addUnwish" type="checkbox" checked> Remove it from the wishlist (added by ' + esc(wished.by) + ')</label>' : '') +
-      '<p class="text-gray-400">It is added as your disc, ' + esc(state.data.user.name) + ', and at your place. You can edit the row in the sheet any time.</p>' +
+      '<p id="addWhose" class="text-gray-400">It is added as your disc, ' + esc(state.data.user.name) + ', and at your place. You can edit the row in the sheet any time.</p>' +
       '<p id="addError" class="hidden text-amber-400"></p>' +
       '<div class="flex justify-end gap-2">' +
         '<button type="button" onclick="closeModal()" class="rounded px-4 py-1.5 bg-white/10 hover:bg-white/20">Cancel</button>' +
@@ -905,20 +929,40 @@ function openAdd(ref) {
   document.getElementById('modal').classList.remove('hidden');
 }
 
+// Disc or digital: the form shows formats for a disc and sources for a digital title.
+function pickMedium() {
+  var digital = document.querySelector('#detail input[name=medium]:checked').value === 'digital';
+  document.getElementById('addFormats').hidden = digital;
+  document.getElementById('addSources').hidden = !digital;
+  document.getElementById('addWhose').textContent = digital
+    ? 'It is added as your digital copy, ' + state.data.user.name + '. You can edit the row in the sheet any time.'
+    : 'It is added as your disc, ' + state.data.user.name + ', and at your place. You can edit the row in the sheet any time.';
+  document.getElementById('addNotes').placeholder = digital ? 'e.g. 4K with Dolby Vision' : 'e.g. Steelbook, UK release';
+  document.getElementById('addError').classList.add('hidden');
+}
+
 function addDisc(e, ref) {
   e.preventDefault();
   var form = e.target;
-  var formats = Array.prototype.filter.call(form.querySelectorAll('input[name=format]'), function (x) { return x.checked; }).map(function (x) { return x.value; });
-  if (!formats.length) {
+  var ticked = function (name) {
+    return Array.prototype.filter.call(form.querySelectorAll('input[name=' + name + ']'), function (x) { return x.checked; }).map(function (x) { return x.value; });
+  };
+  var digital = form.querySelector('input[name=medium]:checked').value === 'digital';
+  var formats = ticked('format');
+  var sources = ticked('source');
+  var other = document.getElementById('addOther').value.trim();
+  var problem = digital ? (!sources.length && !other && 'Pick at least one source.') : (!formats.length && 'Pick at least one format.');
+  if (problem) {
     var err = document.getElementById('addError');
-    err.textContent = 'Pick at least one format.';
+    err.textContent = problem;
     err.classList.remove('hidden');
     return;
   }
   var season = document.getElementById('addSeason');
   var unwish = document.getElementById('addUnwish');
   var title = finder.found[ref].title;
-  var params = { ref: ref, formats: formats, season: season ? season.value : '', notes: document.getElementById('addNotes').value, unwish: !!(unwish && unwish.checked) };
+  var params = { ref: ref, season: season ? season.value : '', notes: document.getElementById('addNotes').value, unwish: !!(unwish && unwish.checked) };
+  if (digital) { params.digital = true; params.sources = sources; params.other = other; } else params.formats = formats;
   closeModal();
   finder.adding[ref] = true;
   drawResults('library');
@@ -989,6 +1033,7 @@ function trailerUrl(i) {
 
 function copyBlock(d) {
   var me = state.data.user.name;
+  if (d.digital) return digitalBlock(d);
   var canAct = me === d.owner || me === d.where;
   var others = state.data.people.filter(function (p) { return p !== d.where; });
   var reqs = d.requests || [];
@@ -1035,6 +1080,23 @@ function copyBlock(d) {
     '<div><span class="font-medium">' + esc(d.formats.join(', ')) + '</span>' + (d.notes && d.type.indexOf('collection') < 0 ? ' · ' + esc(d.notes) : '') + '</div>' +
     '<div class="text-gray-400">Owner: ' + esc(d.owner) + ' · Currently at: <span class="' + (d.where !== d.owner ? 'text-amber-400' : '') + '">' + esc(d.where) + '</span></div>' +
     requested + actions + history + '</div>';
+}
+
+// A digital title only ever reaches its owner: no lending, no requests, just its sources and the remove step.
+function digitalBlock(d) {
+  var remove = state.removing === d.key
+    ? '<div class="mt-2 rounded border border-red-500/40 bg-red-500/10 p-2 space-y-2">' +
+        '<div>Remove ' + esc(d.title) + ' (Digital) from the library? Its row is deleted from the sheet.</div>' +
+        '<div class="flex flex-wrap gap-2">' +
+          '<button class="bg-white/10 hover:bg-white/20 rounded px-3 py-1 text-sm" onclick="askRemove(null)">Keep it</button>' +
+          '<button class="bg-red-600 hover:bg-red-500 rounded px-3 py-1 text-sm" onclick="removeDisc(\'' + esc(d.key) + '\')">Yes, remove it</button>' +
+        '</div></div>'
+    : '<div class="mt-2"><button class="text-red-300 hover:text-red-200 text-xs underline" onclick="askRemove(\'' + esc(d.key) + '\')">Remove from library…</button></div>';
+  return '<div class="rounded-lg bg-white/5 p-3 mb-2 text-sm">' +
+    '<div class="flex items-center gap-1.5"><span class="text-sky-300">' + CLOUD_ICON + '</span><span class="font-medium">Digital</span>' +
+      (d.sources && d.sources.length ? ' · ' + esc(d.sources.join(', ')) : '') + (d.notes && d.type.indexOf('collection') < 0 ? ' · ' + esc(d.notes) : '') + '</div>' +
+    '<div class="text-gray-400">Owner: ' + esc(d.owner) + ' · Only you can see this copy, since it can\'t be lent.</div>' +
+    remove + '</div>';
 }
 
 function lend(key) {
