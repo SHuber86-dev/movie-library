@@ -38,7 +38,7 @@ var MAX_NAME = 40;
 var MAX_SEEN_CHANGES = 200;
 var MAX_NOTE = 200;
 var MAX_FETCHES_PER_RUN = 40;
-var DATA_VERSION = 3;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers, 3: genre ids)
+var DATA_VERSION = 4;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers, 3: genre ids, 4: German titles)
 var CACHE_KEY = 'library';
 var CACHE_SECONDS = 3600; // safety net; lending and sheet changes clear the cache right away
 var WARM_MINUTES = 30;    // warmLibraryCache refills the cache well before it expires
@@ -745,12 +745,13 @@ function buildData_(d, refs) {
 }
 
 function movieDetails_(id) {
-  var m = tmdb_('/movie/' + id, { append_to_response: 'credits,videos', include_video_language: videoLanguages_() });
+  var m = tmdb_('/movie/' + id, { append_to_response: 'credits,videos,translations', include_video_language: videoLanguages_() });
   return {
     kind: 'movie',
     tmdbId: id,
     imdbId: m.imdb_id || '',
     title: m.title,
+    germanTitle: germanTitle(m.translations, 'title', m.title),
     year: (m.release_date || '').slice(0, 4),
     overview: m.overview,
     runtime: m.runtime,
@@ -766,13 +767,15 @@ function movieDetails_(id) {
 }
 
 function tvDetails_(id, season) {
-  var t = tmdb_('/tv/' + id, { append_to_response: 'external_ids,credits,videos', include_video_language: videoLanguages_() });
+  var t = tmdb_('/tv/' + id, { append_to_response: 'external_ids,credits,videos,translations', include_video_language: videoLanguages_() });
   var s = season ? tmdb_('/tv/' + id + '/season/' + season, {}) : null;
+  var de = germanTitle(t.translations, 'name', t.name);
   return {
     kind: 'tv',
     tmdbId: id,
     imdbId: (t.external_ids && t.external_ids.imdb_id) || '',
     title: t.name + (s ? ' – ' + s.name : ''),
+    germanTitle: de ? de + (s ? ' – ' + s.name : '') : '',
     year: ((s && s.air_date) || t.first_air_date || '').slice(0, 4),
     overview: (s && s.overview) || t.overview,
     runtime: (t.episode_run_time || [])[0] || null,
@@ -786,6 +789,20 @@ function tvDetails_(id, season) {
     cast: ((t.credits && t.credits.cast) || []).slice(0, 6).map(function (c) { return c.name; }),
     trailer: pickTrailer((t.videos && t.videos.results) || [])
   };
+}
+
+/**
+ * The German title from TMDB's translations (Germany first, then Austria or Switzerland),
+ * or '' when there is none or it is the same as the title the page already shows.
+ */
+function germanTitle(translations, field, shown) {
+  var de = ((translations && translations.translations) || []).filter(function (t) {
+    return t.iso_639_1 === 'de' && t.data && String(t.data[field] || '').trim();
+  });
+  de.sort(function (a, b) { return (a.iso_3166_1 === 'DE' ? 0 : 1) - (b.iso_3166_1 === 'DE' ? 0 : 1); });
+  var title = de.length ? String(de[0].data[field]).trim() : '';
+  var same = function (x) { return String(x || '').toLowerCase().replace(/[\s\p{P}]+/gu, ''); };
+  return title && same(title) !== same(shown) ? title : '';
 }
 
 /** Videos in the app language first, then English and untagged ones. */
@@ -947,5 +964,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef };
 }
