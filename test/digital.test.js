@@ -133,3 +133,15 @@ test('streaming links: empty or a web address, nothing else', () => {
   assert.throws(() => cleanLink('https://a.com/' + 'x'.repeat(600)), /web address/);
   assert.throws(() => discRow({ ref: 'movie:603', digital: true, sources: ['Netflix'], link: 'ftp://x.com' }), /web address/);
 });
+
+test('where to watch: the region page and every service, once each', () => {
+  const { parseProviders } = require('../src/Code.gs');
+  const json = { results: { DE: {
+    link: 'https://www.themoviedb.org/movie/603-the-matrix/watch?locale=DE',
+    flatrate: [{ provider_name: 'Netflix' }],
+    buy: [{ provider_name: 'Apple TV' }, { provider_name: 'Amazon Video' }],
+    rent: [{ provider_name: 'Apple TV' }]
+  }, US: { flatrate: [{ provider_name: 'Max' }] } } };
+  assert.deepStrictEqual(parseProviders(json, 'DE'), { link: 'https://www.themoviedb.org/movie/603-the-matrix/watch?locale=DE', providers: ['Netflix', 'Apple TV', 'Amazon Video'] });
+  assert.deepStrictEqual(parseProviders(json, 'AT'), { link: '', providers: [] });
+});

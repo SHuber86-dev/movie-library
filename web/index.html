@@ -934,6 +934,11 @@ var SOURCE_SEARCH = {
   'Google Play / YouTube': 'https://play.google.com/store/search?c=movies&q='
 };
 var JUSTWATCH_SEARCH = 'https://www.justwatch.com/de/Suche?q=';
+// How TMDB names each source's services, to tell whether a source offers the title.
+var SOURCE_PROVIDERS = {
+  'Netflix': /^netflix/i, 'Amazon Prime Video': /^amazon/i, 'Apple TV': /^apple/i, 'Disney+': /^disney/i,
+  'Google Play / YouTube': /google play|youtube/i, 'Sky / WOW': /^(sky|wow)\b/i, 'Rakuten TV': /rakuten/i, 'Paramount+': /^paramount/i
+};
 
 function openAdd(ref) {
   var r = finder.found[ref];
@@ -1156,8 +1161,11 @@ function digitalBlock(d) {
     : '<div class="mt-2"><button class="text-red-300 hover:text-red-200 text-xs underline" onclick="askRemove(\'' + esc(d.key) + '\')">Remove from library…</button></div>';
   var a = 'class="text-sky-300 hover:text-sky-200 underline" target="_blank" rel="noopener noreferrer"';
   // Your own link opens the title itself; without one, each source opens its platform's search for the title.
+  // A tick means TMDB lists the title on that source in Germany right now.
+  var watch = watchInfo(d);
   var sources = (d.sources || []).map(function (s) {
-    return d.link ? esc(s) : '<a ' + a + ' href="' + esc(sourceSearch(s, d.title)) + '">' + esc(s) + '</a>';
+    var tick = watch && offers(watch.providers, s) ? ' <span class="text-emerald-400" title="Available there according to TMDB">✓</span>' : '';
+    return (d.link ? esc(s) : '<a ' + a + ' href="' + esc(sourceSearch(s, d.title)) + '">' + esc(s) + '</a>') + tick;
   }).join(', ');
   var link = state.editingLink === d.key
     ? '<form class="mt-2 flex flex-wrap gap-2" onsubmit="saveLink(event, \'' + esc(d.key) + '\')">' +
@@ -1167,6 +1175,7 @@ function digitalBlock(d) {
       '</form>'
     : '<div class="mt-1 flex flex-wrap items-center gap-3">' +
         (d.link ? '<a ' + a.replace('underline', 'font-medium') + ' href="' + esc(d.link) + '">▶ Watch now</a>' : '') +
+        (watch && watch.link ? '<a ' + a.replace('text-sky-300', 'text-gray-400') + ' href="' + esc(watch.link) + '">Where to watch (TMDB)</a>' : '') +
         '<button class="text-gray-400 hover:text-gray-200 text-xs underline" onclick="editLink(\'' + esc(d.key) + '\')">' + (d.link ? 'Change streaming link…' : 'Add a streaming link…') + '</button>' +
       '</div>';
   return '<div class="rounded-lg bg-white/5 p-3 mb-2 text-sm">' +
@@ -1174,6 +1183,28 @@ function digitalBlock(d) {
       (sources ? ' · ' + sources : '') + (d.notes && d.type.indexOf('collection') < 0 ? ' · ' + esc(d.notes) : '') + '</div>' +
     '<div class="text-gray-400">Owner: ' + esc(d.owner) + ' · Only you can see this copy, since it can\'t be lent.</div>' +
     link + remove + '</div>';
+}
+
+// Where TMDB says the title streams, asked once per title when its details first open.
+function watchInfo(d) {
+  var i = d.meta && d.meta.items && d.meta.items[0];
+  if (!i) return null;
+  var ref = i.kind + ':' + i.tmdbId;
+  state.watch = state.watch || {};
+  if (!(ref in state.watch)) {
+    state.watch[ref] = null;
+    var open = state.openKey;
+    api('watch', { ref: ref }).then(function (w) {
+      state.watch[ref] = w;
+      if (open && state.openKey === open && !state.editingLink) openGroup(open);
+    }, function () {});
+  }
+  return state.watch[ref];
+}
+
+function offers(providers, source) {
+  var re = SOURCE_PROVIDERS[source];
+  return providers.some(function (p) { return re ? re.test(p) : p.toLowerCase() === source.toLowerCase(); });
 }
 
 function sourceSearch(source, title) {

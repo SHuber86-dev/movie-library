@@ -83,6 +83,7 @@ function doGet() {
  *   { action: 'addDisc', token, ref, formats: [...], season, notes, unwish } -> a new disc owned by the signed-in user
  *   { action: 'addDisc', token, ref, digital: true, sources: [...], other, link, season, notes, unwish } -> a digital title instead
  *   { action: 'setLink', token, key, link }       -> sets or clears the streaming link of the owner's digital title
+ *   { action: 'watch', token, ref }                 -> { link, providers: [...] }, where TMDB says the title streams
  *   { action: 'removeDisc', token, key, seenWhere } -> deletes the owner's disc from the inventory tab
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  * Every library answer carries rev, so the page can drop an answer that is older than what it shows.
@@ -112,6 +113,7 @@ function doPost(e) {
     if (req.action === 'unwish') return json_({ ok: true, data: removeWish(req.ref, user) });
     if (req.action === 'addDisc') return json_({ ok: true, data: addDisc(req, user) });
     if (req.action === 'setLink') return json_({ ok: true, data: setLink(req.key, req.link, user) });
+    if (req.action === 'watch') return json_({ ok: true, data: watchProviders(req.ref) });
     if (req.action === 'removeDisc') return json_({ ok: true, data: removeDisc(req.key, req.seenWhere, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
@@ -1107,6 +1109,32 @@ function tmdb_(path, params) {
   return JSON.parse(res.getContentText());
 }
 
+// ---------- Where to watch ----------
+// TMDB lists which services offer a title in a region (from JustWatch), but no links to the title on each service:
+// only one TMDB page per region. Asked live when a digital title is opened, and cached for a few hours.
+
+function watchProviders(ref) {
+  ref = checkWishRef(ref);
+  var region = PropertiesService.getScriptProperties().getProperty('REGION') || 'DE';
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('watch:' + region + ':' + ref);
+  if (hit) return JSON.parse(hit);
+  var p = ref.split(':');
+  var out = parseProviders(tmdb_('/' + p[0] + '/' + p[1] + '/watch/providers', {}), region);
+  cache.put('watch:' + region + ':' + ref, JSON.stringify(out), 6 * 3600);
+  return out;
+}
+
+/** The region's TMDB watch page and every service offering the title there (subscription, purchase, rental or free). */
+function parseProviders(json, region) {
+  var r = (json && json.results && json.results[region]) || {};
+  var names = [];
+  ['flatrate', 'buy', 'rent', 'ads', 'free'].forEach(function (kind) {
+    (r[kind] || []).forEach(function (x) { if (x.provider_name && names.indexOf(x.provider_name) < 0) names.push(x.provider_name); });
+  });
+  return { link: /^https:\/\//.test(r.link || '') ? r.link : '', providers: names };
+}
+
 // ---------- Setup ----------
 
 /** Run once from the editor: creates the helper tabs, keys and triggers, then fetches metadata. */
@@ -1296,5 +1324,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, cleanLink: cleanLink, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, cleanLink: cleanLink, parseProviders: parseProviders, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
 }
