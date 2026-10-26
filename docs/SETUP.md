@@ -18,6 +18,8 @@ The app has two parts: the **page** at `https://shuber86-dev.github.io/movie-lib
 2. In Apps Script, open **⚙ Project Settings → Script Properties → Add script property**:
    - `TMDB_TOKEN` = the token
    - `LANGUAGE` = `en-US` or `de-DE`, for the language of the plots and titles
+   - `RAPIDAPI_KEY` = your Streaming Availability key from RapidAPI (optional), so digital titles get a direct **Watch now** link
+   - `REGION` = `DE` (optional, the default), the country for streaming links and availability
 
    The script adds a few properties of its own later (`rev`, `libRev`, `refreshAgain`). Leave them alone: they let the app tell new data from old.
 

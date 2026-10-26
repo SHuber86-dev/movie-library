@@ -145,3 +145,22 @@ test('where to watch: the region page and every service, once each', () => {
   assert.deepStrictEqual(parseProviders(json, 'DE'), { link: 'https://www.themoviedb.org/movie/603-the-matrix/watch?locale=DE', providers: ['Netflix', 'Apple TV', 'Amazon Video'] });
   assert.deepStrictEqual(parseProviders(json, 'AT'), { link: '', providers: [] });
 });
+
+test('streaming links found: the first owned source that offers the title, or the iTunes hit from the same year', () => {
+  const { pickStreamLink, pickItunesLink } = require('../src/Code.gs');
+  const show = { streamingOptions: { de: [
+    { service: { id: 'apple' }, type: 'buy', link: 'https://tv.apple.com/de/movie/x' },
+    { service: { id: 'netflix' }, type: 'subscription', link: 'https://www.netflix.com/title/20557937/' },
+    { service: { id: 'prime' }, type: 'rent', link: 'javascript:alert(1)' }
+  ] } };
+  assert.strictEqual(pickStreamLink(show, 'de', ['Netflix', 'Apple TV']), 'https://www.netflix.com/title/20557937/');
+  assert.strictEqual(pickStreamLink(show, 'de', ['Amazon Prime Video']), '');
+  assert.strictEqual(pickStreamLink(show, 'at', ['Netflix']), '');
+  const hits = [
+    { trackViewUrl: 'https://itunes.apple.com/de/movie/the-matrix-reloaded/id1', releaseDate: '2003-05-15T07:00:00Z' },
+    { trackViewUrl: 'https://itunes.apple.com/de/movie/matrix/id2', releaseDate: '1999-03-31T08:00:00Z' }
+  ];
+  assert.strictEqual(pickItunesLink(hits, false, '1999'), 'https://itunes.apple.com/de/movie/matrix/id2');
+  assert.strictEqual(pickItunesLink(hits, false, ''), 'https://itunes.apple.com/de/movie/the-matrix-reloaded/id1');
+  assert.strictEqual(pickItunesLink([], true, '2008'), '');
+});

@@ -84,6 +84,7 @@ function doGet() {
  *   { action: 'addDisc', token, ref, digital: true, sources: [...], other, link, season, notes, unwish } -> a digital title instead
  *   { action: 'setLink', token, key, link }       -> sets or clears the streaming link of the owner's digital title
  *   { action: 'watch', token, ref }                 -> { link, providers: [...] }, where TMDB says the title streams
+ *   { action: 'findLink', token, key }            -> looks up and saves the streaming link of the owner's digital title
  *   { action: 'removeDisc', token, key, seenWhere } -> deletes the owner's disc from the inventory tab
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  * Every library answer carries rev, so the page can drop an answer that is older than what it shows.
@@ -114,6 +115,7 @@ function doPost(e) {
     if (req.action === 'addDisc') return json_({ ok: true, data: addDisc(req, user) });
     if (req.action === 'setLink') return json_({ ok: true, data: setLink(req.key, req.link, user) });
     if (req.action === 'watch') return json_({ ok: true, data: watchProviders(req.ref) });
+    if (req.action === 'findLink') return json_({ ok: true, data: findLink(req.key, user) });
     if (req.action === 'removeDisc') return json_({ ok: true, data: removeDisc(req.key, req.seenWhere, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
@@ -1135,6 +1137,82 @@ function parseProviders(json, region) {
   return { link: /^https:\/\//.test(r.link || '') ? r.link : '', providers: names };
 }
 
+// ---------- Streaming links ----------
+// The Streaming Availability API (RapidAPI, key in the RAPIDAPI_KEY script property) knows the address of a title on
+// most services; Apple's iTunes search covers titles bought on Apple TV. A found link is saved in the "link" column,
+// so it is looked up once; a link pasted by hand is never replaced. A miss is remembered for a day.
+
+var SA_SERVICES = { 'Netflix': 'netflix', 'Amazon Prime Video': 'prime', 'Apple TV': 'apple', 'Disney+': 'disney', 'Sky / WOW': 'wow', 'Paramount+': 'paramount' };
+
+function findLink(key, user) {
+  var row = readInventory_().rows.filter(function (r) { return r.key === key && r.title && r.digital && r.owner === user.name; })[0];
+  if (!row) throw new Error('Digital title not found. Reload the page.');
+  var cache = CacheService.getScriptCache();
+  var m = readMetadata_()[key];
+  var ref = m && String(m.tmdb_ids || '').split(',')[0].trim();
+  if (row.link || !ref || cache.get('nolink:' + key)) return { link: row.link };
+  var link = '';
+  try {
+    link = streamLink_(ref, row);
+  } catch (e) {
+    console.warn('Streaming link for ' + row.title + ': ' + e.message);
+  }
+  if (!link) {
+    cache.put('nolink:' + key, '1', 24 * 3600);
+    return { link: '' };
+  }
+  write_(true, function () {
+    ensureColumn_(LINK_HEADER);
+    var inv = readInventory_();
+    var now = inv.rows.filter(function (r) { return r.key === key; })[0];
+    if (now && !now.link) inv.sheet.getRange(now.rowIndex, inv.cols.link + 1).setValue(link); // a pasted link wins
+    else if (now) link = now.link;
+  });
+  return { link: link };
+}
+
+function streamLink_(ref, row) {
+  var p = ref.split(':'); // "movie:603" or "tv:1396:2"
+  var props = PropertiesService.getScriptProperties();
+  var country = (props.getProperty('REGION') || 'DE').toLowerCase();
+  var apiKey = props.getProperty('RAPIDAPI_KEY');
+  var link = '';
+  if (apiKey && row.sources.some(function (s) { return SA_SERVICES[s]; })) {
+    var res = UrlFetchApp.fetch('https://streaming-availability.p.rapidapi.com/shows/' + p[0] + '/' + p[1] + '?country=' + country, {
+      headers: { 'X-RapidAPI-Key': apiKey, 'X-RapidAPI-Host': 'streaming-availability.p.rapidapi.com' },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() === 200) link = pickStreamLink(JSON.parse(res.getContentText()), country, row.sources);
+    else if (res.getResponseCode() !== 404) throw new Error('Streaming Availability ' + res.getResponseCode());
+  }
+  if (!link && row.sources.indexOf('Apple TV') >= 0) {
+    var tv = p[0] === 'tv';
+    var title = String(parseSeason(row.title).show || row.title);
+    var it = UrlFetchApp.fetch('https://itunes.apple.com/search?country=' + country + '&media=' + (tv ? 'tvShow&entity=tvSeason' : 'movie&entity=movie') +
+      '&limit=10&term=' + encodeURIComponent(title), { muteHttpExceptions: true });
+    if (it.getResponseCode() === 200) link = pickItunesLink(JSON.parse(it.getContentText()).results, tv, row.yearRaw);
+  }
+  return link;
+}
+
+/** The address of the title on the first owned source that offers it, from a Streaming Availability show. */
+function pickStreamLink(show, country, sources) {
+  var options = (show && show.streamingOptions && show.streamingOptions[country]) || [];
+  for (var i = 0; i < sources.length; i++) {
+    var hit = options.filter(function (o) { return o.service && o.service.id === SA_SERVICES[sources[i]] && /^https:\/\//.test(o.link || ''); })[0];
+    if (hit) return hit.link;
+  }
+  return '';
+}
+
+/** An iTunes search hit for the title: the one from the same year when there is one, else the first. */
+function pickItunesLink(results, tv, year) {
+  results = (results || []).filter(function (x) { return /^https:\/\//.test(tv ? x.collectionViewUrl || '' : x.trackViewUrl || ''); });
+  var y = String(year || '').slice(0, 4);
+  var hit = results.filter(function (x) { return y && String(x.releaseDate || '').slice(0, 4) === y; })[0] || results[0];
+  return hit ? (tv ? hit.collectionViewUrl : hit.trackViewUrl) : '';
+}
+
 // ---------- Setup ----------
 
 /** Run once from the editor: creates the helper tabs, keys and triggers, then fetches metadata. */
@@ -1324,5 +1402,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, cleanLink: cleanLink, parseProviders: parseProviders, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, cleanLink: cleanLink, parseProviders: parseProviders, pickStreamLink: pickStreamLink, pickItunesLink: pickItunesLink, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
 }

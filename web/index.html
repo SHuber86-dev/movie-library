@@ -1163,6 +1163,7 @@ function digitalBlock(d) {
   // Your own link opens the title itself; without one, each source opens its platform's search for the title.
   // A tick means TMDB lists the title on that source in Germany right now.
   var watch = watchInfo(d);
+  findLink(d);
   var sources = (d.sources || []).map(function (s) {
     var tick = watch && offers(watch.providers, s) ? ' <span class="text-emerald-400" title="Available there according to TMDB">✓</span>' : '';
     return (d.link ? esc(s) : '<a ' + a + ' href="' + esc(sourceSearch(s, d.title)) + '">' + esc(s) + '</a>') + tick;
@@ -1200,6 +1201,19 @@ function watchInfo(d) {
     }, function () {});
   }
   return state.watch[ref];
+}
+
+// A digital title without a link gets one looked up once (saved in the sheet when found).
+function findLink(d) {
+  state.linkTried = state.linkTried || {};
+  if (d.link || state.linkTried[d.key]) return;
+  state.linkTried[d.key] = true;
+  var open = state.openKey;
+  api('findLink', { key: d.key }).then(function (r) {
+    if (!r.link || d.link) return;
+    d.link = r.link;
+    if (open && state.openKey === open && !state.editingLink) openGroup(open);
+  }, function () {});
 }
 
 function offers(providers, source) {
