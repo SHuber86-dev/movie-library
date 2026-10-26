@@ -11,6 +11,7 @@
  *   - "Seen":      who has seen which movie, one row per person and movie
  *   - "Requests":  requests to borrow a disc (or to get it back), with their status
  *   - "Wishlist":  movies and series people want, shared by everyone and separate from the library
+ *   - a "source" column in the inventory tab, for digitally owned titles ("Digital" in the disc type column)
  *
  * Script properties: TMDB_TOKEN (TMDB "API Read Access Token"), LANGUAGE (e.g. en-US, de-DE).
  */
@@ -33,6 +34,10 @@ var WISHLIST_SHEET = 'Wishlist';
 var WISHLIST_HEADERS = ['ref', 'title', 'year', 'poster', 'imdb_id', 'by', 'at'];
 var MAX_WISHES = 500;
 var DISC_FORMATS = ['HD Blu Ray', '4k Blu Ray', '3D Blu Ray'];
+var DIGITAL = 'Digital'; // the disc type of a digitally owned title; only its owner ever sees it
+var DIGITAL_SOURCES = ['Netflix', 'Amazon Prime Video', 'Apple TV', 'Disney+', 'Google Play / YouTube', 'Sky / WOW', 'Rakuten TV', 'Paramount+'];
+var SOURCE_HEADER = 'source';
+var MAX_SOURCE = 40;
 var SEARCH_RESULTS = 12;
 var SEARCH_CACHE_SECONDS = 21600; // TMDB search answers are cached for 6 hours
 var MAX_NAME = 40;
@@ -66,6 +71,7 @@ function doGet() {
  *   { action: 'search', token, q }                 -> TMDB movies and series, not the library
  *   { action: 'wish' | 'unwish', token, ref }      ref like "movie:603" or "tv:1396"
  *   { action: 'addDisc', token, ref, formats: [...], season, notes, unwish } -> a new disc owned by the signed-in user
+ *   { action: 'addDisc', token, ref, digital: true, sources: [...], other, season, notes, unwish } -> a digital title instead
  *   { action: 'removeDisc', token, key, seenWhere } -> deletes the owner's disc from the inventory tab
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  */
@@ -166,7 +172,7 @@ function getLibrary_(user) {
     writeLibraryCache_(shared);
   }
   var mine = personalData_(user);
-  return { user: user, people: shared.people, categories: shared.categories, discs: shared.discs, household: mine.household, seen: mine.seen, wishlist: readWishlist_() };
+  return { user: user, people: shared.people, categories: shared.categories, discs: visibleDiscs(shared.discs, user.name), household: mine.household, seen: mine.seen, wishlist: readWishlist_() };
 }
 
 // ---------- Wishlist ----------
@@ -255,6 +261,7 @@ function readWishlist_() {
 // A disc found on TMDB is added as a new row of the inventory tab, owned by and at the person who adds it, so it
 // looks just like a row typed in by hand. Its Metadata row is written at once with the chosen TMDB id (manual=TRUE),
 // so the poster shows straight away and the hourly match never replaces the person's pick.
+// A digitally owned title is a row like any other, with "Digital" as its disc type and where it is in "source".
 
 function addDisc(input, user) {
   var row = discRow(input);
@@ -272,6 +279,7 @@ function addDisc(input, user) {
   lock.waitLock(20000);
   try {
     ensureKeys(); // makes sure the key column exists
+    if (row.sources.length) ensureSourceColumn_();
     var inv = readInventory_();
     var values = [];
     for (var c = 0; c < inv.sheet.getLastColumn(); c++) values.push('');
@@ -281,6 +289,7 @@ function addDisc(input, user) {
     set(inv.cols.disc, row.formats.join(', '));
     set(inv.cols.type, row.type);
     set(inv.cols.notes, row.notes);
+    set(inv.cols.source, row.sources.join(', '));
     set(inv.cols.owner, user.name);
     set(inv.cols.where, user.name);
     inv.sheet.appendRow(values);
@@ -309,7 +318,7 @@ function removeDisc(key, seenWhere, user) {
   lock.waitLock(20000);
   try {
     var inv = readInventory_();
-    var row = inv.rows.filter(function (r) { return r.key === key && r.title; })[0];
+    var row = inv.rows.filter(function (r) { return r.key === key && r.title && canSee_(r, user); })[0];
     if (!row) throw new Error('Disc not found. Reload the page.');
     var holder = row.where || row.owner;
     if (seenWhere && seenWhere !== holder) {
@@ -413,8 +422,8 @@ function buildLibrary_() {
   readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.forEach(function (u) { if (u.name) people[u.name] = true; });
 
   var discs = inv.rows.filter(function (r) { return r.title; }).map(function (r) {
-    if (r.owner) people[r.owner] = true;
-    if (r.where) people[r.where] = true;
+    if (r.owner && !r.digital) people[r.owner] = true;
+    if (r.where && !r.digital) people[r.where] = true;
     var m = meta[r.key];
     var where = r.where || r.owner;
     return {
@@ -422,6 +431,8 @@ function buildLibrary_() {
       title: r.title,
       years: r.years,
       formats: r.formats,
+      digital: r.digital,
+      sources: r.sources,
       type: r.type,
       notes: r.notes,
       owner: r.owner,
@@ -438,6 +449,16 @@ function buildLibrary_() {
   });
 
   return { people: Object.keys(people).sort(), categories: CATEGORY_ORDER.concat([OTHER_CATEGORY]), discs: discs };
+}
+
+/** Everyone sees every disc; a digital title only reaches its owner, since it can't be lent. */
+function visibleDiscs(discs, name) {
+  return discs.filter(function (d) { return !d.digital || d.owner === name; });
+}
+
+/** For actions by key: someone else's digital title is treated as if it didn't exist. */
+function canSee_(row, user) {
+  return !row.digital || row.owner === user.name;
 }
 
 // ---------- Genre categories ----------
@@ -528,8 +549,9 @@ function changeHolder_(key, toName, note, seenWhere, user) {
   lock.waitLock(20000);
   try {
     var inv = readInventory_();
-    var row = inv.rows.filter(function (r) { return r.key === key; })[0];
+    var row = inv.rows.filter(function (r) { return r.key === key && canSee_(r, user); })[0];
     if (!row) throw new Error('Disc not found. Reload the page.');
+    if (row.digital) throw new Error(row.title + ' is digital and can\'t be lent.');
     var holder = row.where || row.owner;
     if (seenWhere && seenWhere !== holder) {
       clearLibraryCache_();
@@ -560,8 +582,9 @@ function requestDisc(key, note, user) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var row = readInventory_().rows.filter(function (r) { return r.key === key; })[0];
+    var row = readInventory_().rows.filter(function (r) { return r.key === key && canSee_(r, user); })[0];
     if (!row) throw new Error('Disc not found. Reload the page.');
+    if (row.digital) throw new Error(row.title + ' is digital and can\'t be lent.');
     if ((row.where || row.owner) === user.name) throw new Error('You already have ' + row.title + '.');
     var sh = sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
     var rows = readTable_(sh).rows;
@@ -636,18 +659,22 @@ function readInventory_() {
     notes: headers.indexOf('notes'),
     owner: headers.indexOf('owner'),
     where: headers.indexOf('where?'),
-    key: headers.indexOf(KEY_HEADER)
+    key: headers.indexOf(KEY_HEADER),
+    source: headers.indexOf(SOURCE_HEADER)
   };
   var rows = [];
   for (var i = 1; i < values.length; i++) {
     var v = values[i];
+    var formats = splitList(String(v[cols.disc]));
     rows.push({
       rowIndex: i + 1,
       key: cols.key >= 0 ? String(v[cols.key]) : '',
       title: String(v[cols.title]).trim(),
       yearRaw: String(v[cols.year]).trim(),
       years: parseYears(String(v[cols.year])),
-      formats: splitList(String(v[cols.disc])),
+      formats: formats,
+      digital: isDigital(formats),
+      sources: cols.source >= 0 ? splitList(String(v[cols.source])) : [],
       type: String(v[cols.type]).trim(),
       notes: String(v[cols.notes]).trim(),
       owner: String(v[cols.owner]).trim(),
@@ -681,6 +708,14 @@ function ensureKeys() {
     if (titles[i][0] && !keys[i][0]) { keys[i][0] = 'd-' + ('000' + (++max)).slice(-4); changed = true; }
   }
   if (changed) sh.getRange(2, keyCol, n, 1).setValues(keys);
+}
+
+/** Adds the "source" header after the last column the first time a digital title is added. */
+function ensureSourceColumn_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET);
+  var lastCol = sh.getLastColumn();
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  if (headers.indexOf(SOURCE_HEADER) < 0) sh.getRange(1, lastCol + 1).setValue(SOURCE_HEADER);
 }
 
 // ---------- Metadata ----------
@@ -1040,21 +1075,43 @@ function parseImdbId(q) {
 }
 
 /**
- * Checks what the page sends for a new disc: a TMDB movie or series, at least one known disc format, and for a
- * series an optional season (none means a box set of the whole series). Returns the cleaned row parts.
+ * Checks what the page sends for a new disc: a TMDB movie or series, at least one known disc format (or, for a
+ * digital title, at least one source), and for a series an optional season (none means a box set of the whole
+ * series). Returns the cleaned row parts.
  */
 function discRow(input) {
   input = input || {};
   var ref = checkWishRef(input.ref);
   var tv = ref.indexOf('tv:') === 0;
-  var formats = DISC_FORMATS.filter(function (f) { return (input.formats || []).indexOf(f) >= 0; });
-  if (!formats.length) throw new Error('Pick at least one disc format.');
+  var formats = [];
+  var sources = [];
+  if (input.digital) {
+    formats = [DIGITAL];
+    sources = cleanSources(input.sources, input.other);
+    if (!sources.length) throw new Error('Pick at least one source.');
+  } else {
+    formats = DISC_FORMATS.filter(function (f) { return (input.formats || []).indexOf(f) >= 0; });
+    if (!formats.length) throw new Error('Pick at least one disc format.');
+  }
   var season = null;
   if (input.season != null && String(input.season).trim() !== '') {
     if (!tv || !/^\d{1,2}$/.test(String(input.season).trim()) || +input.season < 1) throw new Error('Unknown season.');
     season = +input.season;
   }
-  return { ref: ref, formats: formats, season: season, type: tv ? (season ? 'TV season' : 'TV series box set') : 'Film', notes: cleanNote(input.notes) };
+  return { ref: ref, formats: formats, sources: sources, season: season, type: tv ? (season ? 'TV season' : 'TV series box set') : 'Film', notes: cleanNote(input.notes) };
+}
+
+/** Known sources in list order, then an "Other" one typed by hand (commas would split it, so they go). */
+function cleanSources(list, other) {
+  var out = DIGITAL_SOURCES.filter(function (s) { return (Array.isArray(list) ? list : []).indexOf(s) >= 0; });
+  var typed = cleanNote(String(other == null ? '' : other).replace(/[,\n]/g, ' ')).slice(0, MAX_SOURCE).trim();
+  if (typed && out.indexOf(typed) < 0) out.push(typed);
+  return out;
+}
+
+/** A row whose disc type says "Digital" (any case) is a digital title. */
+function isDigital(formats) {
+  return (formats || []).some(function (f) { return String(f).trim().toLowerCase() === DIGITAL.toLowerCase(); });
 }
 
 function checkWishRef(ref) {
@@ -1067,5 +1124,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, isDigital: isDigital, visibleDiscs: visibleDiscs };
 }
