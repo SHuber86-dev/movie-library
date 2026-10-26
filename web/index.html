@@ -432,6 +432,7 @@ function itemBlock(i, g) {
     (i.poster ? '<img loading="lazy" decoding="async" class="w-24 rounded hidden sm:block self-start" src="' + IMG + 'w185' + esc(i.poster) + '" alt="">' : '') +
     '<div class="space-y-1 text-sm">' +
       '<div class="font-medium text-base">' + esc(i.title) + '</div>' +
+      (i.germanTitle ? '<div class="text-gray-300">🇩🇪 ' + esc(i.germanTitle) + '</div>' : '') +
       '<div class="text-gray-400">' + esc(facts) + '</div>' +
       '<p class="text-gray-200">' + esc(i.overview) + '</p>' +
       (i.directors && i.directors.length ? '<div class="text-gray-400">By ' + esc(i.directors.join(', ')) + '</div>' : '') +
