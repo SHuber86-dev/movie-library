@@ -32,6 +32,7 @@ var REQUESTS_HEADERS = ['id', 'disc', 'title', 'by', 'note', 'at', 'status', 'cl
 var WISHLIST_SHEET = 'Wishlist';
 var WISHLIST_HEADERS = ['ref', 'title', 'year', 'poster', 'imdb_id', 'by', 'at'];
 var MAX_WISHES = 500;
+var DISC_FORMATS = ['HD Blu Ray', '4k Blu Ray', '3D Blu Ray'];
 var SEARCH_RESULTS = 12;
 var SEARCH_CACHE_SECONDS = 21600; // TMDB search answers are cached for 6 hours
 var MAX_NAME = 40;
@@ -64,6 +65,7 @@ function doGet() {
  *   { action: 'closeRequest', token, id, how: 'cancel' | 'decline' }
  *   { action: 'search', token, q }                 -> TMDB movies and series, not the library
  *   { action: 'wish' | 'unwish', token, ref }      ref like "movie:603" or "tv:1396"
+ *   { action: 'addDisc', token, ref, formats: [...], season, notes, unwish } -> a new disc owned by the signed-in user
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  */
 function doPost(e) {
@@ -89,6 +91,7 @@ function doPost(e) {
     if (req.action === 'search') return json_({ ok: true, data: searchTitles(req.q) });
     if (req.action === 'wish') return json_({ ok: true, data: addWish(req.ref, user) });
     if (req.action === 'unwish') return json_({ ok: true, data: removeWish(req.ref, user) });
+    if (req.action === 'addDisc') return json_({ ok: true, data: addDisc(req, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
     return json_({ ok: false, code: err.code || 'error', error: String(err.message || err) });
@@ -244,6 +247,54 @@ function readWishlist_() {
       imdbId: String(r.imdb_id || ''), by: String(r.by || ''), at: r.at instanceof Date ? r.at.toISOString() : String(r.at || '')
     };
   }).reverse();
+}
+
+// ---------- Adding discs ----------
+// A disc found on TMDB is added as a new row of the inventory tab, owned by and at the person who adds it, so it
+// looks just like a row typed in by hand. Its Metadata row is written at once with the chosen TMDB id (manual=TRUE),
+// so the poster shows straight away and the hourly match never replaces the person's pick.
+
+function addDisc(input, user) {
+  var row = discRow(input);
+  var tmdbRef = row.season ? row.ref + ':' + row.season : row.ref;
+  var data;
+  try {
+    data = buildData_(null, [tmdbRef]); // before the lock: it calls TMDB
+  } catch (e) {
+    if (row.season && /TMDB 404/.test(e.message)) throw new Error('TMDB has no season ' + row.season + ' of this series.');
+    throw e;
+  }
+  var item = data.items[0];
+  var title = row.season ? item.title.slice(0, item.title.lastIndexOf(' – ')) + ' – Season ' + row.season : item.title;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureKeys(); // makes sure the key column exists
+    var inv = readInventory_();
+    var values = [];
+    for (var c = 0; c < inv.sheet.getLastColumn(); c++) values.push('');
+    var set = function (col, v) { if (col >= 0) values[col] = v; };
+    set(inv.cols.title, cleanNote(title));
+    set(inv.cols.year, item.year);
+    set(inv.cols.disc, row.formats.join(', '));
+    set(inv.cols.type, row.type);
+    set(inv.cols.notes, row.notes);
+    set(inv.cols.owner, user.name);
+    set(inv.cols.where, user.name);
+    inv.sheet.appendRow(values);
+    ensureKeys(); // gives the new row its key
+    var added = readInventory_().rows.filter(function (r) { return r.title; }).pop();
+    sheet_(METADATA_SHEET, METADATA_HEADERS).appendRow([added.key, added.title, added.yearRaw, tmdbRef, true, JSON.stringify(data), new Date(), user.name, '']);
+    if (input.unwish) {
+      var wsh = sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
+      var wishes = readTable_(wsh).rows;
+      for (var i = wishes.length - 1; i >= 0; i--) if (wishes[i].ref === row.ref) wsh.deleteRow(i + 2);
+    }
+    clearLibraryCache_();
+    return getLibrary_(user);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---------- Seen ----------
@@ -954,6 +1005,24 @@ function parseImdbId(q) {
   return m ? m[1] : null;
 }
 
+/**
+ * Checks what the page sends for a new disc: a TMDB movie or series, at least one known disc format, and for a
+ * series an optional season (none means a box set of the whole series). Returns the cleaned row parts.
+ */
+function discRow(input) {
+  input = input || {};
+  var ref = checkWishRef(input.ref);
+  var tv = ref.indexOf('tv:') === 0;
+  var formats = DISC_FORMATS.filter(function (f) { return (input.formats || []).indexOf(f) >= 0; });
+  if (!formats.length) throw new Error('Pick at least one disc format.');
+  var season = null;
+  if (input.season != null && String(input.season).trim() !== '') {
+    if (!tv || !/^\d{1,2}$/.test(String(input.season).trim()) || +input.season < 1) throw new Error('Unknown season.');
+    season = +input.season;
+  }
+  return { ref: ref, formats: formats, season: season, type: tv ? (season ? 'TV season' : 'TV series box set') : 'Film', notes: cleanNote(input.notes) };
+}
+
 function checkWishRef(ref) {
   if (!/^(movie|tv):\d{1,10}$/.test(String(ref || ''))) throw new Error('Unknown title.');
   return String(ref);
@@ -964,5 +1033,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow };
 }
