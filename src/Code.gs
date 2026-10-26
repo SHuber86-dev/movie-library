@@ -1190,7 +1190,7 @@ function streamLink_(ref, row) {
     var title = String(parseSeason(row.title).show || row.title);
     var it = UrlFetchApp.fetch('https://itunes.apple.com/search?country=' + country + '&media=' + (tv ? 'tvShow&entity=tvSeason' : 'movie&entity=movie') +
       '&limit=10&term=' + encodeURIComponent(title), { muteHttpExceptions: true });
-    if (it.getResponseCode() === 200) link = pickItunesLink(JSON.parse(it.getContentText()).results, tv, row.yearRaw);
+    if (it.getResponseCode() === 200) link = localLink(pickItunesLink(JSON.parse(it.getContentText()).results, tv, row.yearRaw), country);
   }
   return link;
 }
@@ -1200,9 +1200,15 @@ function pickStreamLink(show, country, sources) {
   var options = (show && show.streamingOptions && show.streamingOptions[country]) || [];
   for (var i = 0; i < sources.length; i++) {
     var hit = options.filter(function (o) { return o.service && o.service.id === SA_SERVICES[sources[i]] && /^https:\/\//.test(o.link || ''); })[0];
-    if (hit) return hit.link;
+    if (hit) return localLink(hit.link, country);
   }
   return '';
+}
+
+/** Apple's links carry a store country (often "us", or none, which also means the US store): use the region's store. */
+function localLink(url, country) {
+  var m = /^(https:\/\/(?:tv|itunes)\.apple\.com)(?:\/[a-z]{2}(?=\/))?(\/.*)$/i.exec(url);
+  return m ? m[1] + '/' + country + m[2] : url;
 }
 
 /** An iTunes search hit for the title: the one from the same year when there is one, else the first. */
@@ -1402,5 +1408,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, cleanLink: cleanLink, parseProviders: parseProviders, pickStreamLink: pickStreamLink, pickItunesLink: pickItunesLink, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, cleanLink: cleanLink, parseProviders: parseProviders, pickStreamLink: pickStreamLink, pickItunesLink: pickItunesLink, localLink: localLink, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
 }
