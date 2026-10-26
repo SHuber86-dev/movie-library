@@ -35,6 +35,7 @@ var MAX_WISHES = 500;
 var SEARCH_RESULTS = 12;
 var SEARCH_CACHE_SECONDS = 21600; // TMDB search answers are cached for 6 hours
 var MAX_NAME = 40;
+var MAX_SEEN_CHANGES = 200;
 var MAX_NOTE = 200;
 var MAX_FETCHES_PER_RUN = 40;
 var DATA_VERSION = 3;     // bump when buildData_ adds fields, so older cached rows are fetched again (2: trailers, 3: genre ids)
@@ -57,7 +58,7 @@ function doGet() {
 /**
  * Every request is a POST with a text/plain JSON body (no CORS preflight):
  *   { action: 'library' | 'lend' | 'return', token: <Google ID token>, key, to, seenWhere }
- *   { action: 'seen', token, movie, title, person, seen: true | false }
+ *   { action: 'seen', token, changes: [{ movie, title, person, seen: true | false }, ...] }
  *   { action: 'household', token, names: [...] }
  *   { action: 'request', token, key, note }
  *   { action: 'closeRequest', token, id, how: 'cancel' | 'decline' }
@@ -81,7 +82,7 @@ function doPost(e) {
     if (req.action === 'library') return json_({ ok: true, data: getLibrary_(user) });
     if (req.action === 'lend') return json_({ ok: true, data: lendDisc(req.key, req.to, req.seenWhere, user) });
     if (req.action === 'return') return json_({ ok: true, data: returnDisc(req.key, req.seenWhere, user) });
-    if (req.action === 'seen') return json_({ ok: true, data: markSeen(req.movie, req.title, req.person, req.seen, user) });
+    if (req.action === 'seen') return json_({ ok: true, data: markSeen(req.changes || [req], user) }); // [req]: pages from before batching
     if (req.action === 'household') return json_({ ok: true, data: setHousehold(req.names, user) });
     if (req.action === 'request') return json_({ ok: true, data: requestDisc(req.key, req.note, user) });
     if (req.action === 'closeRequest') return json_({ ok: true, data: closeRequest(req.id, req.how, user) });
@@ -262,23 +263,38 @@ function personalData_(user) {
   return { household: household, seen: seen };
 }
 
-/** Marks or unmarks one person (the user or someone in their household) as having seen a movie. */
-function markSeen(movie, title, person, seen, user) {
-  if (!/^(movie|disc):[\w-]+$/.test(String(movie || ''))) throw new Error('Unknown movie.');
+/**
+ * Applies a batch of ticks and unticks from the page. Each change says what the mark should be, not "toggle",
+ * so the page can safely send a batch again if it never saw the answer. Changes for people who are no longer
+ * in the household are skipped; the last change for the same movie and person wins.
+ */
+function markSeen(changes, user) {
+  if (!Array.isArray(changes) || changes.length > MAX_SEEN_CHANGES) throw new Error('Bad seen list.');
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    if (person !== user.name && personalData_(user).household.indexOf(person) < 0) {
-      throw new Error(person + ' is not in your household.');
-    }
+    var allowed = [user.name].concat(personalData_(user).household);
+    var wanted = {};
+    changes.forEach(function (c) {
+      if (!c || !/^(movie|disc):[\w-]+$/.test(String(c.movie || '')) || allowed.indexOf(c.person) < 0) return;
+      wanted[c.movie + '\n' + c.person] = c;
+    });
     var sh = sheet_(SEEN_SHEET, SEEN_HEADERS);
-    var rows = readTable_(sh).rows;
-    var found = -1;
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].movie === movie && String(rows[i].email).toLowerCase() === user.email && String(rows[i].person) === person) { found = i; break; }
-    }
-    if (seen && found < 0) sh.appendRow([movie, String(title || '').slice(0, 200), user.email, person, new Date()]);
-    if (!seen && found >= 0) sh.deleteRow(found + 2);
+    var existing = {};
+    readTable_(sh).rows.forEach(function (r, i) {
+      if (String(r.email).toLowerCase() !== user.email) return;
+      var k = r.movie + '\n' + r.person;
+      (existing[k] = existing[k] || []).push(i + 2);
+    });
+    var remove = [];
+    var add = [];
+    Object.keys(wanted).forEach(function (k) {
+      var c = wanted[k];
+      if (c.seen && !existing[k]) add.push([c.movie, String(c.title || '').slice(0, 200), user.email, c.person, new Date()]);
+      if (!c.seen && existing[k]) remove = remove.concat(existing[k]);
+    });
+    remove.sort(function (a, b) { return b - a; }).forEach(function (row) { sh.deleteRow(row); });
+    add.forEach(function (row) { sh.appendRow(row); });
     return getLibrary_(user);
   } finally {
     lock.releaseLock();
