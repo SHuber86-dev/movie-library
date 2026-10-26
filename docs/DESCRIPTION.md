@@ -10,7 +10,7 @@
 - **Track who has what:** each disc shows who owns it and where it is right now. The owner or current holder can lend it to a friend or mark it returned with one click, and every handover is kept in a history.
 - **Request a disc:** ask for a disc you don't have, or ask for your own disc back, with an optional note like "for Saturday". A Requests overview lists what you've been asked to bring, grouped by person, and what you've asked others for, so the next time you meet you know which discs to grab.
 - **Shared wishlist:** search any movie or series on TMDB (or paste an IMDb link) and add it to a wishlist everyone sees. It's kept apart from the library, shows who added what, and marks titles you already own.
-- **Add a disc from search:** the library's search box also finds movies and series on TMDB. Pick one, tick the formats (and the season for a series), and it's added to the sheet as your disc, poster and all. If it was on the wishlist, it can come off in the same step.
+- **Add a disc from search:** the library's search box also finds movies and series on TMDB. Pick one, tick the formats (and the season for a series), and it's added to the sheet as your disc, poster and all. If it was on the wishlist, it can come off in the same step, and a wishlist title can be moved to the library straight from its details.
 - **My shelf:** one view shows what you own, what you've lent out and what you're currently borrowing.
 
 ## How it works
