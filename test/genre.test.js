@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { fakeProperties } = require('./fakes');
 
 const ctx = { module: { exports: {} } };
 vm.createContext(ctx);
@@ -44,7 +45,7 @@ test('every category the page can show is listed in order, Other last', () => {
 
 test('the library the page gets carries the category order', () => {
   const lib = { people: [], categories: ['Drama', 'Other'], discs: [] };
-  const c = { module: { exports: {} } };
+  const c = { module: { exports: {} }, PropertiesService: fakeProperties() };
   vm.createContext(c);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/Code.gs'), 'utf8'), c);
   c.readLibraryCache_ = () => lib;
