@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { fakeProperties } = require('./fakes');
-const { discRow, cleanSources, isDigital, visibleDiscs } = require('../src/Code.gs');
+const { discRow, cleanSources, cleanLink, isDigital, visibleDiscs } = require('../src/Code.gs');
 
 // A tiny in-memory sheet with the parts of the Apps Script Range API the code uses.
 function fakeSheet(rows) {
@@ -104,4 +104,63 @@ test('a digital title cannot be lent or requested, and others are told it does n
   assert.strictEqual(tabs.Requests.values.length, 1);
   assert.strictEqual(ctx.removeDisc('d-0008', 'Matthias', matthias), 'fresh library');
   assert.strictEqual(inv.values.length, 2);
+});
+
+test('a digital title can carry a streaming link, in a link column added when first needed', () => {
+  const { ctx, inv } = load();
+  ctx.addDisc({ ref: 'movie:603', digital: true, sources: ['Netflix'], link: ' https://www.netflix.com/title/20557937 ' }, steffen);
+  assert.deepStrictEqual(inv.values[0].slice(8), ['source', 'link']);
+  assert.deepStrictEqual(inv.values[3].slice(8), ['Netflix', 'https://www.netflix.com/title/20557937']);
+});
+
+test('the owner sets and clears the link of their digital title; nobody else can, and discs have none', () => {
+  const { ctx, inv } = load();
+  ctx.setLink('d-0008', 'https://tv.apple.com/movie/alien', matthias);
+  assert.strictEqual(inv.values[0][8], 'link');
+  assert.strictEqual(inv.values[2][8], 'https://tv.apple.com/movie/alien');
+  ctx.setLink('d-0008', '', matthias);
+  assert.strictEqual(inv.values[2][8], '');
+  assert.throws(() => ctx.setLink('d-0008', 'https://x.example/a', steffen), /not found/);
+  assert.throws(() => ctx.setLink('d-0007', 'https://x.example/a', matthias), /not found/);
+});
+
+test('streaming links: empty or a web address, nothing else', () => {
+  assert.strictEqual(cleanLink(''), '');
+  assert.strictEqual(cleanLink(null), '');
+  assert.strictEqual(cleanLink('https://www.primevideo.com/detail/0ABC'), 'https://www.primevideo.com/detail/0ABC');
+  assert.throws(() => cleanLink('javascript:alert(1)'), /web address/);
+  assert.throws(() => cleanLink('netflix.com/title/1'), /web address/);
+  assert.throws(() => cleanLink('https://a.com/' + 'x'.repeat(600)), /web address/);
+  assert.throws(() => discRow({ ref: 'movie:603', digital: true, sources: ['Netflix'], link: 'ftp://x.com' }), /web address/);
+});
+
+test('where to watch: the region page and every service, once each', () => {
+  const { parseProviders } = require('../src/Code.gs');
+  const json = { results: { DE: {
+    link: 'https://www.themoviedb.org/movie/603-the-matrix/watch?locale=DE',
+    flatrate: [{ provider_name: 'Netflix' }],
+    buy: [{ provider_name: 'Apple TV' }, { provider_name: 'Amazon Video' }],
+    rent: [{ provider_name: 'Apple TV' }]
+  }, US: { flatrate: [{ provider_name: 'Max' }] } } };
+  assert.deepStrictEqual(parseProviders(json, 'DE'), { link: 'https://www.themoviedb.org/movie/603-the-matrix/watch?locale=DE', providers: ['Netflix', 'Apple TV', 'Amazon Video'] });
+  assert.deepStrictEqual(parseProviders(json, 'AT'), { link: '', providers: [] });
+});
+
+test('streaming links found: the first owned source that offers the title, or the iTunes hit from the same year', () => {
+  const { pickStreamLink, pickItunesLink } = require('../src/Code.gs');
+  const show = { streamingOptions: { de: [
+    { service: { id: 'apple' }, type: 'buy', link: 'https://tv.apple.com/de/movie/x' },
+    { service: { id: 'netflix' }, type: 'subscription', link: 'https://www.netflix.com/title/20557937/' },
+    { service: { id: 'prime' }, type: 'rent', link: 'javascript:alert(1)' }
+  ] } };
+  assert.strictEqual(pickStreamLink(show, 'de', ['Netflix', 'Apple TV']), 'https://www.netflix.com/title/20557937/');
+  assert.strictEqual(pickStreamLink(show, 'de', ['Amazon Prime Video']), '');
+  assert.strictEqual(pickStreamLink(show, 'at', ['Netflix']), '');
+  const hits = [
+    { trackViewUrl: 'https://itunes.apple.com/de/movie/the-matrix-reloaded/id1', releaseDate: '2003-05-15T07:00:00Z' },
+    { trackViewUrl: 'https://itunes.apple.com/de/movie/matrix/id2', releaseDate: '1999-03-31T08:00:00Z' }
+  ];
+  assert.strictEqual(pickItunesLink(hits, false, '1999'), 'https://itunes.apple.com/de/movie/matrix/id2');
+  assert.strictEqual(pickItunesLink(hits, false, ''), 'https://itunes.apple.com/de/movie/the-matrix-reloaded/id1');
+  assert.strictEqual(pickItunesLink([], true, '2008'), '');
 });

@@ -12,6 +12,7 @@
  *   - "Requests":  requests to borrow a disc (or to get it back), with their status
  *   - "Wishlist":  movies and series people want, shared by everyone and separate from the library
  *   - a "source" column in the inventory tab, for digitally owned titles ("Digital" in the disc type column)
+ *   - a "link" column in the inventory tab, for an optional streaming URL of a digital title
  *
  * Script properties: TMDB_TOKEN (TMDB "API Read Access Token"), LANGUAGE (e.g. en-US, de-DE).
  */
@@ -38,6 +39,8 @@ var DIGITAL = 'Digital'; // the disc type of a digitally owned title; only its o
 var DIGITAL_SOURCES = ['Netflix', 'Amazon Prime Video', 'Apple TV', 'Disney+', 'Google Play / YouTube', 'Sky / WOW', 'Rakuten TV', 'Paramount+'];
 var SOURCE_HEADER = 'source';
 var MAX_SOURCE = 40;
+var LINK_HEADER = 'link'; // an optional streaming URL of a digital title, opened instead of the platform searches
+var MAX_LINK = 500;
 var SEARCH_RESULTS = 12;
 var SEARCH_CACHE_SECONDS = 21600; // TMDB search answers are cached for 6 hours
 var MAX_NAME = 40;
@@ -78,7 +81,10 @@ function doGet() {
  *   { action: 'search', token, q }                 -> TMDB movies and series, not the library
  *   { action: 'wish' | 'unwish', token, ref }      ref like "movie:603" or "tv:1396"
  *   { action: 'addDisc', token, ref, formats: [...], season, notes, unwish } -> a new disc owned by the signed-in user
- *   { action: 'addDisc', token, ref, digital: true, sources: [...], other, season, notes, unwish } -> a digital title instead
+ *   { action: 'addDisc', token, ref, digital: true, sources: [...], other, link, season, notes, unwish } -> a digital title instead
+ *   { action: 'setLink', token, key, link }       -> sets or clears the streaming link of the owner's digital title
+ *   { action: 'watch', token, ref }                 -> { link, providers: [...] }, where TMDB says the title streams
+ *   { action: 'findLink', token, key }            -> looks up and saves the streaming link of the owner's digital title
  *   { action: 'removeDisc', token, key, seenWhere } -> deletes the owner's disc from the inventory tab
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
  * Every library answer carries rev, so the page can drop an answer that is older than what it shows.
@@ -107,6 +113,9 @@ function doPost(e) {
     if (req.action === 'wish') return json_({ ok: true, data: addWish(req.ref, user) });
     if (req.action === 'unwish') return json_({ ok: true, data: removeWish(req.ref, user) });
     if (req.action === 'addDisc') return json_({ ok: true, data: addDisc(req, user) });
+    if (req.action === 'setLink') return json_({ ok: true, data: setLink(req.key, req.link, user) });
+    if (req.action === 'watch') return json_({ ok: true, data: watchProviders(req.ref) });
+    if (req.action === 'findLink') return json_({ ok: true, data: findLink(req.key, user) });
     if (req.action === 'removeDisc') return json_({ ok: true, data: removeDisc(req.key, req.seenWhere, user) });
     return json_({ ok: false, code: 'error', error: 'Unknown action.' });
   } catch (err) {
@@ -362,7 +371,8 @@ function addDisc(input, user) {
   var title = row.season ? item.title.slice(0, item.title.lastIndexOf(' – ')) + ' – Season ' + row.season : item.title;
   write_(true, function () {
     ensureKeys(); // makes sure the key column exists
-    if (row.sources.length) ensureSourceColumn_();
+    if (row.sources.length) ensureColumn_(SOURCE_HEADER);
+    if (row.link) ensureColumn_(LINK_HEADER);
     var inv = readInventory_();
     var values = [];
     for (var c = 0; c < inv.sheet.getLastColumn(); c++) values.push('');
@@ -373,6 +383,7 @@ function addDisc(input, user) {
     set(inv.cols.type, row.type);
     set(inv.cols.notes, row.notes);
     set(inv.cols.source, row.sources.join(', '));
+    set(inv.cols.link, row.link);
     set(inv.cols.owner, user.name);
     set(inv.cols.where, user.name);
     inv.sheet.appendRow(values);
@@ -388,6 +399,20 @@ function addDisc(input, user) {
 // Only the owner can remove a disc, and only while it is at their place, so nobody loses track of a lent-out disc.
 // Its row leaves the inventory tab; its Metadata row stays, so the key is never handed to a new disc. The Loans tab
 // gets a last "removed" line as a record, and open requests for the disc are closed.
+
+/** Sets (or, when empty, clears) the streaming link of the signed-in user's own digital title. */
+function setLink(key, link, user) {
+  link = cleanLink(link);
+  write_(true, function () {
+    if (link) ensureColumn_(LINK_HEADER);
+    var inv = readInventory_();
+    var row = inv.rows.filter(function (r) { return r.key === key && r.title && canSee_(r, user); })[0];
+    if (!row || !row.digital) throw new Error('Digital title not found. Reload the page.');
+    if (user.name !== row.owner) throw new Error('Only ' + row.owner + ' can change this link.');
+    if (inv.cols.link >= 0) inv.sheet.getRange(row.rowIndex, inv.cols.link + 1).setValue(link);
+  });
+  return getLibrary_(user);
+}
 
 function removeDisc(key, seenWhere, user) {
   write_(true, function () {
@@ -538,6 +563,7 @@ function buildLibrary_() {
       formats: r.formats,
       digital: r.digital,
       sources: r.sources,
+      link: r.link,
       type: r.type,
       notes: r.notes,
       owner: r.owner,
@@ -776,7 +802,8 @@ function readInventory_() {
     owner: headers.indexOf('owner'),
     where: headers.indexOf('where?'),
     key: headers.indexOf(KEY_HEADER),
-    source: headers.indexOf(SOURCE_HEADER)
+    source: headers.indexOf(SOURCE_HEADER),
+    link: headers.indexOf(LINK_HEADER)
   };
   var rows = [];
   for (var i = 1; i < values.length; i++) {
@@ -791,6 +818,7 @@ function readInventory_() {
       formats: formats,
       digital: isDigital(formats),
       sources: cols.source >= 0 ? splitList(String(v[cols.source])) : [],
+      link: cols.link >= 0 ? String(v[cols.link]).trim() : '',
       type: String(v[cols.type]).trim(),
       notes: String(v[cols.notes]).trim(),
       owner: String(v[cols.owner]).trim(),
@@ -826,12 +854,12 @@ function ensureKeys() {
   if (changed) sh.getRange(2, keyCol, n, 1).setValues(keys);
 }
 
-/** Adds the "source" header after the last column the first time a digital title is added. */
-function ensureSourceColumn_() {
+/** Adds a header ("source" or "link") after the last column the first time a digital title needs it. */
+function ensureColumn_(header) {
   var sh = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET);
   var lastCol = sh.getLastColumn();
   var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
-  if (headers.indexOf(SOURCE_HEADER) < 0) sh.getRange(1, lastCol + 1).setValue(SOURCE_HEADER);
+  if (headers.indexOf(header) < 0) sh.getRange(1, lastCol + 1).setValue(header);
 }
 
 // ---------- Metadata ----------
@@ -1083,6 +1111,108 @@ function tmdb_(path, params) {
   return JSON.parse(res.getContentText());
 }
 
+// ---------- Where to watch ----------
+// TMDB lists which services offer a title in a region (from JustWatch), but no links to the title on each service:
+// only one TMDB page per region. Asked live when a digital title is opened, and cached for a few hours.
+
+function watchProviders(ref) {
+  ref = checkWishRef(ref);
+  var region = PropertiesService.getScriptProperties().getProperty('REGION') || 'DE';
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('watch:' + region + ':' + ref);
+  if (hit) return JSON.parse(hit);
+  var p = ref.split(':');
+  var out = parseProviders(tmdb_('/' + p[0] + '/' + p[1] + '/watch/providers', {}), region);
+  cache.put('watch:' + region + ':' + ref, JSON.stringify(out), 6 * 3600);
+  return out;
+}
+
+/** The region's TMDB watch page and every service offering the title there (subscription, purchase, rental or free). */
+function parseProviders(json, region) {
+  var r = (json && json.results && json.results[region]) || {};
+  var names = [];
+  ['flatrate', 'buy', 'rent', 'ads', 'free'].forEach(function (kind) {
+    (r[kind] || []).forEach(function (x) { if (x.provider_name && names.indexOf(x.provider_name) < 0) names.push(x.provider_name); });
+  });
+  return { link: /^https:\/\//.test(r.link || '') ? r.link : '', providers: names };
+}
+
+// ---------- Streaming links ----------
+// The Streaming Availability API (RapidAPI, key in the RAPIDAPI_KEY script property) knows the address of a title on
+// most services; Apple's iTunes search covers titles bought on Apple TV. A found link is saved in the "link" column,
+// so it is looked up once; a link pasted by hand is never replaced. A miss is remembered for a day.
+
+var SA_SERVICES = { 'Netflix': 'netflix', 'Amazon Prime Video': 'prime', 'Apple TV': 'apple', 'Disney+': 'disney', 'Sky / WOW': 'wow', 'Paramount+': 'paramount' };
+
+function findLink(key, user) {
+  var row = readInventory_().rows.filter(function (r) { return r.key === key && r.title && r.digital && r.owner === user.name; })[0];
+  if (!row) throw new Error('Digital title not found. Reload the page.');
+  var cache = CacheService.getScriptCache();
+  var m = readMetadata_()[key];
+  var ref = m && String(m.tmdb_ids || '').split(',')[0].trim();
+  if (row.link || !ref || cache.get('nolink:' + key)) return { link: row.link };
+  var link = '';
+  try {
+    link = streamLink_(ref, row);
+  } catch (e) {
+    console.warn('Streaming link for ' + row.title + ': ' + e.message);
+  }
+  if (!link) {
+    cache.put('nolink:' + key, '1', 24 * 3600);
+    return { link: '' };
+  }
+  write_(true, function () {
+    ensureColumn_(LINK_HEADER);
+    var inv = readInventory_();
+    var now = inv.rows.filter(function (r) { return r.key === key; })[0];
+    if (now && !now.link) inv.sheet.getRange(now.rowIndex, inv.cols.link + 1).setValue(link); // a pasted link wins
+    else if (now) link = now.link;
+  });
+  return { link: link };
+}
+
+function streamLink_(ref, row) {
+  var p = ref.split(':'); // "movie:603" or "tv:1396:2"
+  var props = PropertiesService.getScriptProperties();
+  var country = (props.getProperty('REGION') || 'DE').toLowerCase();
+  var apiKey = props.getProperty('RAPIDAPI_KEY');
+  var link = '';
+  if (apiKey && row.sources.some(function (s) { return SA_SERVICES[s]; })) {
+    var res = UrlFetchApp.fetch('https://streaming-availability.p.rapidapi.com/shows/' + p[0] + '/' + p[1] + '?country=' + country, {
+      headers: { 'X-RapidAPI-Key': apiKey, 'X-RapidAPI-Host': 'streaming-availability.p.rapidapi.com' },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() === 200) link = pickStreamLink(JSON.parse(res.getContentText()), country, row.sources);
+    else if (res.getResponseCode() !== 404) throw new Error('Streaming Availability ' + res.getResponseCode());
+  }
+  if (!link && row.sources.indexOf('Apple TV') >= 0) {
+    var tv = p[0] === 'tv';
+    var title = String(parseSeason(row.title).show || row.title);
+    var it = UrlFetchApp.fetch('https://itunes.apple.com/search?country=' + country + '&media=' + (tv ? 'tvShow&entity=tvSeason' : 'movie&entity=movie') +
+      '&limit=10&term=' + encodeURIComponent(title), { muteHttpExceptions: true });
+    if (it.getResponseCode() === 200) link = pickItunesLink(JSON.parse(it.getContentText()).results, tv, row.yearRaw);
+  }
+  return link;
+}
+
+/** The address of the title on the first owned source that offers it, from a Streaming Availability show. */
+function pickStreamLink(show, country, sources) {
+  var options = (show && show.streamingOptions && show.streamingOptions[country]) || [];
+  for (var i = 0; i < sources.length; i++) {
+    var hit = options.filter(function (o) { return o.service && o.service.id === SA_SERVICES[sources[i]] && /^https:\/\//.test(o.link || ''); })[0];
+    if (hit) return hit.link;
+  }
+  return '';
+}
+
+/** An iTunes search hit for the title: the one from the same year when there is one, else the first. */
+function pickItunesLink(results, tv, year) {
+  results = (results || []).filter(function (x) { return /^https:\/\//.test(tv ? x.collectionViewUrl || '' : x.trackViewUrl || ''); });
+  var y = String(year || '').slice(0, 4);
+  var hit = results.filter(function (x) { return y && String(x.releaseDate || '').slice(0, 4) === y; })[0] || results[0];
+  return hit ? (tv ? hit.collectionViewUrl : hit.trackViewUrl) : '';
+}
+
 // ---------- Setup ----------
 
 /** Run once from the editor: creates the helper tabs, keys and triggers, then fetches metadata. */
@@ -1223,9 +1353,11 @@ function discRow(input) {
   var tv = ref.indexOf('tv:') === 0;
   var formats = [];
   var sources = [];
+  var link = '';
   if (input.digital) {
     formats = [DIGITAL];
     sources = cleanSources(input.sources, input.other);
+    link = cleanLink(input.link);
     if (!sources.length) throw new Error('Pick at least one source.');
   } else {
     formats = DISC_FORMATS.filter(function (f) { return (input.formats || []).indexOf(f) >= 0; });
@@ -1236,7 +1368,7 @@ function discRow(input) {
     if (!tv || !/^\d{1,2}$/.test(String(input.season).trim()) || +input.season < 1) throw new Error('Unknown season.');
     season = +input.season;
   }
-  return { ref: ref, formats: formats, sources: sources, season: season, type: tv ? (season ? 'TV season' : 'TV series box set') : 'Film', notes: cleanNote(input.notes) };
+  return { ref: ref, formats: formats, sources: sources, link: link, season: season, type: tv ? (season ? 'TV season' : 'TV series box set') : 'Film', notes: cleanNote(input.notes) };
 }
 
 /** Known sources in list order, then an "Other" one typed by hand (commas would split it, so they go). */
@@ -1245,6 +1377,14 @@ function cleanSources(list, other) {
   var typed = cleanNote(String(other == null ? '' : other).replace(/[,\n]/g, ' ')).slice(0, MAX_SOURCE).trim();
   if (typed && out.indexOf(typed) < 0) out.push(typed);
   return out;
+}
+
+/** An optional streaming URL: empty, or a single http(s) address the page can safely open in a new tab. */
+function cleanLink(link) {
+  var url = String(link == null ? '' : link).trim();
+  if (!url) return '';
+  if (url.length > MAX_LINK || !/^https?:\/\/[^\s/?#]+\.[^\s]*$/i.test(url)) throw new Error('The streaming link must be a web address starting with https://');
+  return url;
 }
 
 /** A row whose disc type says "Digital" (any case) is a digital title. */
@@ -1262,5 +1402,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, cleanLink: cleanLink, parseProviders: parseProviders, pickStreamLink: pickStreamLink, pickItunesLink: pickItunesLink, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
 }

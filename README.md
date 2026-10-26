@@ -10,7 +10,7 @@ The page is hosted on **GitHub Pages** at <https://shuber86-dev.github.io/movie-
 |---|---|
 | `src/Code.gs` | API: checks the Google sign-in, reads the sheet, keeps row keys, fetches TMDB metadata, handles lending, requests, "seen by" marks, the wishlist, adding discs and digitally owned titles found on TMDB (digital ones only reach their owner) and removing them |
 | `src/appsscript.json` | Manifest (runs as the owner; the script checks every caller's sign-in itself) |
-| `web/index.html` | The web page: Google sign-in, poster grid, filters, details, lend and return, requests, seen by, household, wishlist, adding discs or digital titles (with their source) and removing them, disc and digital icons on the cards |
+| `web/index.html` | The web page: Google sign-in, poster grid, filters, details, lend and return, requests, seen by, household, wishlist, adding discs or digital titles (with their source and an optional streaming link) and removing them, opening a digital title on its platform, disc and digital icons on the cards |
 | `web/config.js` | The OAuth Client ID and the Apps Script `/exec` URL the page uses |
 | `.github/workflows/pages.yml` | Runs the tests and publishes `web/` to GitHub Pages on every push to `main` |
 | `docs/SETUP.md` | Step-by-step install guide |
