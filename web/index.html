@@ -90,6 +90,7 @@
 var IMG = 'https://image.tmdb.org/t/p/';
 var STORE_KEY = 'movie-library:v1';
 var TOKEN_KEY = 'movie-library:token';
+var OUTBOX_KEY = 'movie-library:seen-outbox';
 var CONFIG = window.MOVIE_LIBRARY_CONFIG || {};
 var state = { data: null, groups: [], view: location.hash === '#wishlist' ? 'wishlist' : 'library' };
 var auth = { token: null, exp: 0, waiting: [], gis: false };
@@ -155,6 +156,8 @@ function forgetToken() {
 }
 
 function signOut() {
+  flushSeen(); // the outbox belongs to this account, so it is sent now and not kept for the next one
+  writeOutbox({});
   forgetToken();
   try { localStorage.removeItem(STORE_KEY); } catch (e) {}
   if (auth.gis) google.accounts.id.disableAutoSelect();
@@ -166,7 +169,8 @@ function api(action, params, retried) {
   if (!CONFIG.apiUrl || !/^https:/.test(CONFIG.apiUrl)) return Promise.reject(new Error('Set apiUrl in config.js to the Apps Script /exec URL.'));
   return getToken().then(function (token) {
     var body = Object.assign({ action: action, token: token }, params || {});
-    return fetch(CONFIG.apiUrl, { method: 'POST', body: JSON.stringify(body) });
+    // keepalive lets a save that starts as the page is closed still reach the server.
+    return fetch(CONFIG.apiUrl, { method: 'POST', body: JSON.stringify(body), keepalive: action === 'seen' });
   }).then(function (res) {
     if (!res.ok) throw new Error('The server answered ' + res.status + '. Please try again.');
     return res.json();
@@ -192,8 +196,9 @@ function load() {
   } catch (e) {}
   var saved = null;
   try { saved = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
-  if (saved) render(saved, true);
+  if (saved) render(withOutbox(saved), true);
   refresh();
+  flushSeen(); // ticks left over from the last visit
 }
 
 function refresh() {
@@ -201,6 +206,7 @@ function refresh() {
 }
 
 function fresh(data) {
+  withOutbox(data);
   try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) {}
   render(data, false);
 }
@@ -343,7 +349,8 @@ function applyFilters() {
   var shown = state.groups.filter(matches);
   var discCount = shown.reduce(function (n, g) { return n + g.discs.length; }, 0);
   document.getElementById('status').textContent = shown.length + ' of ' + state.groups.length + ' titles · ' +
-    discCount + ' of ' + state.data.discs.length + ' discs' + (state.stale ? ' · updating…' : '');
+    discCount + ' of ' + state.data.discs.length + ' discs' + (state.stale ? ' · updating…' : '') +
+    (Object.keys(readOutbox()).length ? ' · saving ticks…' : '');
   document.getElementById('grid').innerHTML = shown.map(card).join('');
 }
 
@@ -440,8 +447,9 @@ function itemBlock(i, g) {
 // TV seasons share a TMDB id, so they, and discs without movie data, are keyed by the disc.
 
 var HOUSEHOLD = '#household';
-var seenQueue = Promise.resolve();
-var seenPending = 0;
+var SEEN_DELAY = 800;  // ticks made within this time of each other go out in one save
+var SEEN_RETRY = 15000; // after a network failure, try again this much later
+var seen = { timer: null, sending: false };
 
 function viewers() {
   return [state.data.user.name].concat(state.data.household || []);
@@ -476,21 +484,72 @@ function seenRow(key, title) {
       (state.data.household && state.data.household.length ? 'Edit household' : '+ Add kids or family') + '</button></div>';
 }
 
-// The tick shows at once; the saves go out one after another so a later click is never undone by an earlier answer.
+// Ticks wait in an outbox kept in this browser until the sheet confirms them, so a reload, a closed tab or a phone
+// switching apps never loses them: whatever is left is sent on the next visit. Each entry says what the mark should
+// be (not "toggle"), so sending one twice is harmless. Ticks made close together go out in one save.
+
+function readOutbox() {
+  try { return JSON.parse(localStorage.getItem(OUTBOX_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function writeOutbox(box) {
+  try {
+    if (Object.keys(box).length) localStorage.setItem(OUTBOX_KEY, JSON.stringify(box));
+    else localStorage.removeItem(OUTBOX_KEY);
+  } catch (e) {}
+}
+
+// Shows unsent ticks on top of what the sheet sent, so an answer to any other call doesn't hide them.
+function withOutbox(data) {
+  var box = readOutbox();
+  data.seen = data.seen || {};
+  Object.keys(box).forEach(function (k) {
+    var c = box[k];
+    var list = (data.seen[c.movie] || []).filter(function (p) { return p !== c.person; });
+    if (c.seen) list.push(c.person);
+    data.seen[c.movie] = list;
+  });
+  return data;
+}
+
 function toggleSeen(key, person, title) {
-  var seen = state.data.seen = state.data.seen || {};
-  var list = seen[key] = (seen[key] || []).slice();
-  var on = list.indexOf(person) < 0;
-  if (on) list.push(person); else list.splice(list.indexOf(person), 1);
+  var on = !isSeen(key, person);
+  var box = readOutbox();
+  box[key + '\n' + person] = { movie: key, title: title, person: person, seen: on };
+  writeOutbox(box);
+  withOutbox(state.data);
   redraw();
-  seenPending++;
-  seenQueue = seenQueue.then(function () {
-    return api('seen', { movie: key, title: title, person: person, seen: on });
-  }).then(function (data) {
-    if (--seenPending === 0) fresh(data);
+  clearTimeout(seen.timer);
+  seen.timer = setTimeout(flushSeen, SEEN_DELAY);
+}
+
+function flushSeen() {
+  clearTimeout(seen.timer);
+  var box = readOutbox();
+  var keys = Object.keys(box);
+  if (seen.sending || !keys.length) return;
+  seen.sending = true;
+  var sent = JSON.stringify(box);
+  api('seen', { changes: keys.map(function (k) { return box[k]; }) }).then(function (data) {
+    // Drop what the sheet now has; a tick changed again meanwhile stays for the next save.
+    var now = readOutbox();
+    var was = JSON.parse(sent);
+    Object.keys(was).forEach(function (k) {
+      if (now[k] && JSON.stringify(now[k]) === JSON.stringify(was[k])) delete now[k];
+    });
+    writeOutbox(now);
+    seen.sending = false;
+    fresh(data);
+    if (Object.keys(now).length) flushSeen();
   }, function (err) {
-    seenPending--;
-    changeFailed(err);
+    seen.sending = false;
+    if (err && err.code === 'denied') {
+      writeOutbox({});
+      return changeFailed(err);
+    }
+    // Offline, a busy sheet, or no answer: keep the ticks and try again.
+    alertBox('Your ticks are not saved yet. Trying again shortly.');
+    seen.timer = setTimeout(flushSeen, SEEN_RETRY);
   });
 }
 
@@ -885,6 +944,10 @@ document.getElementById('detail').addEventListener('click', function (e) {
   var b = e.target.closest('[data-seen-key]');
   if (b) toggleSeen(b.dataset.seenKey, b.dataset.person, b.dataset.title);
 });
+// Send waiting ticks straight away when the page is hidden or closed, rather than on the next visit.
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flushSeen(); });
+window.addEventListener('pagehide', flushSeen);
+window.addEventListener('online', flushSeen);
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
 load();
 </script>
