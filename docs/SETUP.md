@@ -19,6 +19,8 @@ The app has two parts: the **page** at `https://shuber86-dev.github.io/movie-lib
    - `TMDB_TOKEN` = the token
    - `LANGUAGE` = `en-US` or `de-DE`, for the language of the plots and titles
 
+   The script adds a few properties of its own later (`rev`, `libRev`, `refreshAgain`). Leave them alone: they let the app tell new data from old.
+
 ## 3. Run setup once
 1. In the Editor, pick `setup` in the function dropdown and click **Run**.
 2. Google asks for permission. Click **Advanced → Go to Movie Library (unsafe)**. That's expected for your own, unpublished script.

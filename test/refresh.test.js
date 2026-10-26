@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { fakeProperties } = require('./fakes');
 
 // A tiny in-memory spreadsheet: each tab is an array of rows, row 1 holds the headers.
 function fakeSheet(rows) {
@@ -30,9 +31,10 @@ function load(tabs) {
   const lock = { waitLock() {}, tryLock: () => true, releaseLock() {} };
   const ctx = {
     module: { exports: {} },
+    PropertiesService: fakeProperties(),
     SpreadsheetApp: { getActive: () => ({ getSheetByName: n => sheets[n] || null, insertSheet: n => (sheets[n] = fakeSheet([])) }) },
     LockService: { getScriptLock: () => lock, getDocumentLock: () => lock },
-    CacheService: { getScriptCache: () => ({ remove() {} }) }
+    CacheService: { getScriptCache: () => ({ remove() {}, removeAll() {} }) }
   };
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/Code.gs'), 'utf8'), ctx);
@@ -85,4 +87,37 @@ test('a numeric title is not refetched on every run', () => {
   const meta = { title_seen: 1917, year_seen: 2019, data_json: JSON.stringify({ v: ctx.DATA_VERSION, items: [] }), manual: false };
   assert.strictEqual(ctx.isStale_(meta, { title: '1917', yearRaw: '2019' }), false);
   assert.strictEqual(ctx.isStale_(meta, { title: '1917 (4K)', yearRaw: '2019' }), true);
+});
+
+test('a run that starts while another is working leaves a note instead of queueing for the lock', () => {
+  const { ctx } = load({});
+  let synced = 0;
+  ctx.syncWhere_ = () => { synced++; return []; };
+  ctx.LockService = { getDocumentLock: () => ({ tryLock: () => false, releaseLock() {} }) };
+  ctx.refreshMetadata();
+  assert.strictEqual(synced, 0);
+  assert.strictEqual(ctx.PropertiesService.store.refreshAgain, '1');
+});
+
+test('the working run goes round again when a change came in meanwhile', () => {
+  const { ctx } = load({});
+  let synced = 0;
+  ctx.syncWhere_ = () => {
+    if (++synced === 1) ctx.PropertiesService.store.refreshAgain = '1'; // an edit lands during the first round
+    return [];
+  };
+  ctx.refreshMetadata();
+  assert.strictEqual(synced, 2);
+});
+
+test('a disc that gets its first movie data hands over its seen marks', () => {
+  const { ctx } = load({
+    Tabellenblatt1: [INV, ['Heat', '1995', '', 'Film', '', 'Steffen', 'Steffen', 'd-0001'], ['Heat', '1995', '', 'Film', '', 'Anna', 'Anna', 'd-0002']],
+    Metadata: [META, ['d-0001', '', '', '', false, '', '', 'Steffen', ''],
+      ['d-0002', 'Old', '1995', 'movie:5', false, JSON.stringify({ items: [{ kind: 'movie', tmdbId: 5 }] }), '', 'Anna', '']]
+  });
+  ctx.buildData_ = () => ({ v: ctx.DATA_VERSION, items: [{ kind: 'movie', tmdbId: 949 }] });
+  const moves = JSON.parse(JSON.stringify(ctx.fetchMetadata_(ctx.syncWhere_())));
+  // d-0002 already had movie data, so its marks are under a movie key already.
+  assert.deepStrictEqual(moves, [{ from: 'disc:d-0001', to: ['movie:949'], keep: false }]);
 });

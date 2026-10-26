@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { fakeProperties } = require('./fakes');
 
 // A tiny in-memory sheet with the parts of the Apps Script Range API the code uses.
 function fakeSheet(rows) {
@@ -15,6 +16,7 @@ function fakeSheet(rows) {
     getLastColumn: width,
     appendRow: r => values.push(Array.from(r)),
     deleteRow: i => values.splice(i - 1, 1),
+    deleteRows: (i, n) => values.splice(i - 1, n),
     getRange: (r, c, nr = 1, nc = 1) => ({
       setValues: v => v.forEach((row, i) => row.forEach((x, j) => { values[r - 1 + i][c - 1 + j] = x; }))
     })
@@ -39,6 +41,7 @@ function load() {
   };
   const ctx = {
     module: { exports: {} },
+    PropertiesService: fakeProperties(),
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     SpreadsheetApp: { getActive: () => ({ getSheetByName: () => inv }) }
   };

@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { fakeProperties } = require('./fakes');
 const { searchResults, parseImdbId, checkWishRef } = require('../src/Code.gs');
 
 const HEADERS = ['ref', 'title', 'year', 'poster', 'imdb_id', 'by', 'at'];
@@ -14,7 +15,10 @@ function fakeSheet(headers, rows) {
     values,
     getDataRange: () => ({ getValues: () => values.map(r => r.slice()) }),
     appendRow: r => values.push(r),
-    deleteRow: i => values.splice(i - 1, 1)
+    deleteRow: i => values.splice(i - 1, 1),
+    deleteRows: (i, n) => values.splice(i - 1, n),
+    getLastRow: () => values.length,
+    getRange: (r, c, nr, nc) => ({ setValues: v => v.forEach((row, i) => { values[r - 1 + i] = row.slice(); }) })
   };
 }
 
@@ -22,6 +26,7 @@ function load(rows) {
   const calls = [];
   const ctx = {
     module: { exports: {} },
+    PropertiesService: fakeProperties(),
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) }
   };
   vm.createContext(ctx);

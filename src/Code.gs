@@ -48,7 +48,12 @@ var DATA_VERSION = 4;     // bump when buildData_ adds fields, so older cached r
 var CACHE_KEY = 'library';
 var CACHE_SECONDS = 3600; // safety net; lending and sheet changes clear the cache right away
 var WARM_MINUTES = 30;    // warmLibraryCache refills the cache well before it expires
-var CACHE_CHUNK = 90000;  // CacheService values are limited to 100 KB each
+var CACHE_CHUNK = 90000;  // CacheService values are limited to 100 KB each; the cached JSON is kept to ASCII, so characters are bytes
+var REV_KEY = 'rev';         // script property: goes up on every change, so a page can tell an older answer from a newer one
+var LIB_REV_KEY = 'libRev';  // script property: goes up when the shared library changes; the cached copy is tagged with it
+var REFRESH_AGAIN_KEY = 'refreshAgain';
+var REFRESH_ROUNDS = 3;
+var DENIED_SECONDS = 60;
 
 // ---------- Web app (JSON API for the page on GitHub Pages) ----------
 
@@ -63,8 +68,10 @@ function doGet() {
 
 /**
  * Every request is a POST with a text/plain JSON body (no CORS preflight):
- *   { action: 'library' | 'lend' | 'return', token: <Google ID token>, key, to, seenWhere }
- *   { action: 'seen', token, changes: [{ movie, title, person, seen: true | false }, ...] }
+ *   { action: 'library', token: <Google ID token>, have }  -> { unchanged: true, rev } when have is still the newest rev
+ *   { action: 'lend' | 'return', token, key, to, seenWhere }
+ *   { action: 'seen', token, changes: [{ movie, title, person, seen: true | false }, ...], reply: 'personal' }
+ *                                                  -> with reply 'personal', only { rev, seen, household }
  *   { action: 'household', token, names: [...] }
  *   { action: 'request', token, key, note }
  *   { action: 'closeRequest', token, id, how: 'cancel' | 'decline' }
@@ -74,6 +81,7 @@ function doGet() {
  *   { action: 'addDisc', token, ref, digital: true, sources: [...], other, season, notes, unwish } -> a digital title instead
  *   { action: 'removeDisc', token, key, seenWhere } -> deletes the owner's disc from the inventory tab
  * Answers { ok: true, data: <library> } or { ok: false, code: 'signin' | 'denied' | 'error', error }.
+ * Every library answer carries rev, so the page can drop an answer that is older than what it shows.
  */
 function doPost(e) {
   var req;
@@ -88,10 +96,10 @@ function doPost(e) {
       return json_({ ok: false, code: 'denied', error: email + ' has no access to this library. Ask the owner to share the sheet with you.' });
     }
     var user = currentUser_(email);
-    if (req.action === 'library') return json_({ ok: true, data: getLibrary_(user) });
+    if (req.action === 'library') return json_({ ok: true, data: getLibrary_(user, req.have) });
     if (req.action === 'lend') return json_({ ok: true, data: lendDisc(req.key, req.to, req.seenWhere, user) });
     if (req.action === 'return') return json_({ ok: true, data: returnDisc(req.key, req.seenWhere, user) });
-    if (req.action === 'seen') return json_({ ok: true, data: markSeen(req.changes || [req], user) }); // [req]: pages from before batching
+    if (req.action === 'seen') return json_({ ok: true, data: markSeen(req.changes || [req], user, req.reply) }); // [req]: pages from before batching
     if (req.action === 'household') return json_({ ok: true, data: setHousehold(req.names, user) });
     if (req.action === 'request') return json_({ ok: true, data: requestDisc(req.key, req.note, user) });
     if (req.action === 'closeRequest') return json_({ ok: true, data: closeRequest(req.id, req.how, user) });
@@ -143,18 +151,24 @@ function signInError_(message) {
   return e;
 }
 
-/** People the sheet is shared with, plus everyone in the Users tab. A miss rereads the list, so new shares work at once. */
+/**
+ * People the sheet is shared with, plus everyone in the Users tab. A miss rereads the list, so new shares work at once;
+ * a refused email is remembered for a minute, so it doesn't reread the sharing list on every call.
+ */
 function hasAccess_(email) {
   var cache = CacheService.getScriptCache();
   var cached = cache.get('access');
   if (cached && JSON.parse(cached).indexOf(email) >= 0) return true;
+  if (cache.get('denied:' + email)) return false;
   var list = accessList_();
   cache.put('access', JSON.stringify(list), ACCESS_SECONDS);
-  return list.indexOf(email) >= 0;
+  var ok = list.indexOf(email) >= 0;
+  if (!ok) cache.put('denied:' + email, '1', DENIED_SECONDS);
+  return ok;
 }
 
 function accessList_() {
-  var emails = readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.map(function (u) { return u.email; });
+  var emails = Object.keys(usersByEmail_(true));
   try {
     var ss = SpreadsheetApp.getActive();
     ss.getEditors().concat(ss.getViewers()).forEach(function (u) { emails.push(u.getEmail()); });
@@ -164,15 +178,90 @@ function accessList_() {
   return emails.map(function (x) { return String(x || '').trim().toLowerCase(); }).filter(Boolean);
 }
 
-/** Everything the page needs in one call. The shared part is cached; the user is looked up per call. */
-function getLibrary_(user) {
-  var shared = readLibraryCache_();
+/** The Users tab as { email: name }, cached like the access list. fresh rereads the tab. */
+function usersByEmail_(fresh) {
+  var cache = CacheService.getScriptCache();
+  var hit = fresh ? null : cache.get('users');
+  if (hit) return JSON.parse(hit);
+  var users = {};
+  readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.forEach(function (u) {
+    var email = String(u.email || '').trim().toLowerCase();
+    if (email && !(email in users)) users[email] = String(u.name || '');
+  });
+  cache.put('users', JSON.stringify(users), ACCESS_SECONDS);
+  return users;
+}
+
+/**
+ * Everything the page needs in one call. The shared part is cached; the user is looked up per call.
+ * have is the rev of the copy the page already has: if nothing changed since, the answer says so instead.
+ */
+function getLibrary_(user, have) {
+  var revs = revs_(); // read first, so the data below is at least as new as the rev it is sent with
+  if (have && +have === revs.rev) return { unchanged: true, rev: revs.rev };
+  var shared = readLibraryCache_(revs.lib);
   if (!shared) {
     shared = buildLibrary_();
-    writeLibraryCache_(shared);
+    writeLibraryCache_(shared, revs.lib);
   }
   var mine = personalData_(user);
-  return { user: user, people: shared.people, categories: shared.categories, discs: visibleDiscs(shared.discs, user.name), household: mine.household, seen: mine.seen, wishlist: readWishlist_() };
+  return { rev: revs.rev, user: user, people: shared.people, categories: shared.categories, discs: visibleDiscs(shared.discs, user.name), household: mine.household, seen: mine.seen, wishlist: readWishlist_() };
+}
+
+/** Only the signed-in user's household and seen marks, for the answer to a tick. */
+function personalAnswer_(user) {
+  var rev = revs_().rev;
+  var mine = personalData_(user);
+  return { rev: rev, household: mine.household, seen: mine.seen };
+}
+
+// ---------- Changes ----------
+// Every change runs under the script lock and then raises the rev, even when it fails halfway. The page uses the rev
+// to drop answers older than what it shows, and the cached library is only used while its tag matches libRev.
+
+function revs_() {
+  var p = PropertiesService.getScriptProperties().getProperties();
+  return { rev: +p[REV_KEY] || 0, lib: +p[LIB_REV_KEY] || 0 };
+}
+
+/** shared: the change is to the cached library (discs, loans, requests), not only to someone's marks or the wishlist. Callers hold the lock. */
+function bumpRev_(shared) {
+  var now = revs_();
+  var next = {};
+  next[REV_KEY] = String(now.rev + 1);
+  if (shared) next[LIB_REV_KEY] = String(now.lib + 1);
+  PropertiesService.getScriptProperties().setProperties(next);
+  if (shared) clearLibraryCache_();
+}
+
+function write_(shared, fn) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    return fn();
+  } finally {
+    try { bumpRev_(shared); } finally { lock.releaseLock(); }
+  }
+}
+
+/** Deletes sheet rows by number, one call per run of neighbouring rows, bottom first so the numbers stay right. */
+function deleteRows_(sh, rowIndexes) {
+  var rows = rowIndexes.slice().sort(function (a, b) { return b - a; });
+  for (var i = 0; i < rows.length;) {
+    var j = i;
+    while (j + 1 < rows.length && rows[j + 1] === rows[j] - 1) j++;
+    sh.deleteRows(rows[j], j - i + 1);
+    i = j + 1;
+  }
+}
+
+/** Appends rows in one call. Unlike appendRow, a range can't reach past the grid, so the grid grows first when needed. */
+function appendRows_(sh, rows) {
+  if (!rows.length) return;
+  var first = sh.getLastRow() + 1;
+  var short = first + rows.length - 1 - sh.getMaxRows();
+  if (short > 0) sh.insertRowsAfter(sh.getMaxRows(), short);
+  sh.getRange(first, 1, rows.length, rows[0].length).setValues(rows);
 }
 
 // ---------- Wishlist ----------
@@ -206,33 +295,29 @@ function searchTitles(q) {
 function addWish(ref, user) {
   ref = checkWishRef(ref);
   var info = wishDetails_(ref); // before the lock: it calls TMDB
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
+  write_(false, function () {
     var sh = sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
     var rows = readTable_(sh).rows;
     if (!rows.some(function (r) { return r.ref === ref; })) {
       if (rows.length >= MAX_WISHES) throw new Error('The wishlist is full. Remove a few titles first.');
       sh.appendRow([ref, cleanNote(info.title), info.year, info.poster, info.imdbId, user.name, new Date()]);
     }
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+  });
+  return getLibrary_(user);
 }
 
 function removeWish(ref, user) {
   ref = checkWishRef(ref);
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
-    var sh = sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
-    var rows = readTable_(sh).rows;
-    for (var i = rows.length - 1; i >= 0; i--) if (rows[i].ref === ref) sh.deleteRow(i + 2);
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+  write_(false, function () { removeWishRows_(ref); });
+  return getLibrary_(user);
+}
+
+/** Callers hold the lock. */
+function removeWishRows_(ref) {
+  var sh = sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
+  var remove = [];
+  readTable_(sh).rows.forEach(function (r, i) { if (r.ref === ref) remove.push(i + 2); });
+  deleteRows_(sh, remove);
 }
 
 function wishDetails_(ref) {
@@ -275,9 +360,7 @@ function addDisc(input, user) {
   }
   var item = data.items[0];
   var title = row.season ? item.title.slice(0, item.title.lastIndexOf(' – ')) + ' – Season ' + row.season : item.title;
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
+  write_(true, function () {
     ensureKeys(); // makes sure the key column exists
     if (row.sources.length) ensureSourceColumn_();
     var inv = readInventory_();
@@ -296,16 +379,9 @@ function addDisc(input, user) {
     ensureKeys(); // gives the new row its key
     var added = readInventory_().rows.filter(function (r) { return r.title; }).pop();
     sheet_(METADATA_SHEET, METADATA_HEADERS).appendRow([added.key, added.title, added.yearRaw, tmdbRef, true, JSON.stringify(data), new Date(), user.name, '']);
-    if (input.unwish) {
-      var wsh = sheet_(WISHLIST_SHEET, WISHLIST_HEADERS);
-      var wishes = readTable_(wsh).rows;
-      for (var i = wishes.length - 1; i >= 0; i--) if (wishes[i].ref === row.ref) wsh.deleteRow(i + 2);
-    }
-    clearLibraryCache_();
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+    if (input.unwish) removeWishRows_(row.ref);
+  });
+  return getLibrary_(user);
 }
 
 // ---------- Removing discs ----------
@@ -314,15 +390,12 @@ function addDisc(input, user) {
 // gets a last "removed" line as a record, and open requests for the disc are closed.
 
 function removeDisc(key, seenWhere, user) {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
+  write_(true, function () {
     var inv = readInventory_();
     var row = inv.rows.filter(function (r) { return r.key === key && r.title && canSee_(r, user); })[0];
     if (!row) throw new Error('Disc not found. Reload the page.');
     var holder = row.where || row.owner;
     if (seenWhere && seenWhere !== holder) {
-      clearLibraryCache_();
       throw new Error(row.title + ' is now at ' + holder + '. The page has been refreshed, please try again.');
     }
     if (user.name !== row.owner) throw new Error('Only ' + row.owner + ' can remove this disc.');
@@ -333,11 +406,8 @@ function removeDisc(key, seenWhere, user) {
     readTable_(rsh).rows.forEach(function (r, i) {
       if (r.disc === key && r.status === 'open') setRequestStatus_(rsh, i + 2, 'removed', user.name);
     });
-    clearLibraryCache_();
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+  });
+  return getLibrary_(user);
 }
 
 // ---------- Seen ----------
@@ -346,9 +416,7 @@ function removeDisc(key, seenWhere, user) {
 
 /** The signed-in user's household names and { movie: [people who saw it] }. */
 function personalData_(user) {
-  var household = readTable_(sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS)).rows.filter(function (r) {
-    return String(r.email).toLowerCase() === user.email && r.name;
-  }).map(function (r) { return String(r.name); });
+  var household = readHousehold_(user);
   var seen = {};
   readTable_(sheet_(SEEN_SHEET, SEEN_HEADERS)).rows.forEach(function (r) {
     if (String(r.email).toLowerCase() !== user.email || !r.movie) return;
@@ -357,17 +425,22 @@ function personalData_(user) {
   return { household: household, seen: seen };
 }
 
+function readHousehold_(user) {
+  return readTable_(sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS)).rows.filter(function (r) {
+    return String(r.email).toLowerCase() === user.email && r.name;
+  }).map(function (r) { return String(r.name); });
+}
+
 /**
  * Applies a batch of ticks and unticks from the page. Each change says what the mark should be, not "toggle",
  * so the page can safely send a batch again if it never saw the answer. Changes for people who are no longer
  * in the household are skipped; the last change for the same movie and person wins.
+ * With reply 'personal' the answer is only the user's marks and household, not the whole library.
  */
-function markSeen(changes, user) {
+function markSeen(changes, user, reply) {
   if (!Array.isArray(changes) || changes.length > MAX_SEEN_CHANGES) throw new Error('Bad seen list.');
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
-    var allowed = [user.name].concat(personalData_(user).household);
+  write_(false, function () {
+    var allowed = [user.name].concat(readHousehold_(user));
     var wanted = {};
     changes.forEach(function (c) {
       if (!c || !/^(movie|disc):[\w-]+$/.test(String(c.movie || '')) || allowed.indexOf(c.person) < 0) return;
@@ -387,37 +460,69 @@ function markSeen(changes, user) {
       if (c.seen && !existing[k]) add.push([c.movie, String(c.title || '').slice(0, 200), user.email, c.person, new Date()]);
       if (!c.seen && existing[k]) remove = remove.concat(existing[k]);
     });
-    remove.sort(function (a, b) { return b - a; }).forEach(function (row) { sh.deleteRow(row); });
-    add.forEach(function (row) { sh.appendRow(row); });
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+    deleteRows_(sh, remove);
+    appendRows_(sh, add);
+  });
+  return reply === 'personal' ? personalAnswer_(user) : getLibrary_(user);
 }
 
 /** Replaces the user's household list. Marks for removed names stay in the sheet and come back if the name is added again. */
 function setHousehold(names, user) {
   var clean = cleanHousehold(names, user.name);
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
+  write_(false, function () {
     var sh = sheet_(HOUSEHOLD_SHEET, HOUSEHOLD_HEADERS);
-    var rows = readTable_(sh).rows;
-    for (var i = rows.length - 1; i >= 0; i--) {
-      if (String(rows[i].email).toLowerCase() === user.email) sh.deleteRow(i + 2);
-    }
-    clean.forEach(function (n) { sh.appendRow([user.email, n]); });
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+    var remove = [];
+    readTable_(sh).rows.forEach(function (r, i) { if (String(r.email).toLowerCase() === user.email) remove.push(i + 2); });
+    deleteRows_(sh, remove);
+    appendRows_(sh, clean.map(function (n) { return [user.email, n]; }));
+  });
+  return getLibrary_(user);
+}
+
+/**
+ * A disc without movie data has its marks under "disc:<key>". Once it is matched to movies, the marks move to
+ * "movie:<tmdb id>", where the page now looks. They stay under the disc key too while the disc also holds a series.
+ * moves: [{ from: 'disc:d-0012', to: ['movie:603'], keep: false }]. Callers hold the lock.
+ */
+function moveSeen_(moves) {
+  if (!moves.length) return;
+  var sh = sheet_(SEEN_SHEET, SEEN_HEADERS);
+  var rows = readTable_(sh).rows;
+  var have = {};
+  var mark = function (movie, r) { return movie + '\n' + String(r.email).toLowerCase() + '\n' + r.person; };
+  rows.forEach(function (r) { have[mark(r.movie, r)] = true; });
+  var add = [];
+  var remove = [];
+  moves.forEach(function (m) {
+    rows.forEach(function (r, i) {
+      if (r.movie !== m.from) return;
+      m.to.forEach(function (to) {
+        if (have[mark(to, r)]) return;
+        have[mark(to, r)] = true;
+        add.push([to, r.title, r.email, r.person, r.at]);
+      });
+      if (!m.keep) remove.push(i + 2);
+    });
+  });
+  deleteRows_(sh, remove);
+  appendRows_(sh, add);
+}
+
+/** The keys the page files marks under for a disc with this TMDB data (see seenKey in the page). */
+function movieSeenKeys(data) {
+  var items = (data && data.items) || [];
+  return items.filter(function (i) { return i.kind === 'movie'; }).map(function (i) { return 'movie:' + i.tmdbId; });
+}
+
+function hasSeries(data) {
+  return ((data && data.items) || []).some(function (i) { return i.kind !== 'movie'; });
 }
 
 function buildLibrary_() {
   var inv = readInventory_();
   var meta = readMetadata_();
-  var loans = readTable_(sheet_(LOANS_SHEET, LOANS_HEADERS)).rows;
-  var requests = readTable_(sheet_(REQUESTS_SHEET, REQUESTS_HEADERS)).rows.filter(function (q) { return q.status === 'open'; });
+  var loans = groupBy_(readTable_(sheet_(LOANS_SHEET, LOANS_HEADERS)).rows, 'id');
+  var requests = groupBy_(readTable_(sheet_(REQUESTS_SHEET, REQUESTS_HEADERS)).rows.filter(function (q) { return q.status === 'open'; }), 'disc');
   var people = {};
   readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.forEach(function (u) { if (u.name) people[u.name] = true; });
 
@@ -438,17 +543,27 @@ function buildLibrary_() {
       owner: r.owner,
       where: where,
       // A request by whoever has the disc now was met by a hand edit of "where?".
-      requests: requests.filter(function (q) { return q.disc === r.key && q.by !== where; }).map(function (q) {
+      requests: (requests[r.key] || []).filter(function (q) { return q.by !== where; }).map(function (q) {
         return { id: q.id, by: q.by, note: q.note, at: q.at instanceof Date ? q.at.toISOString() : String(q.at) };
       }),
       meta: m && m.data_json ? withCategories_(JSON.parse(m.data_json)) : null,
-      history: loans.filter(function (l) { return l.id === r.key; }).map(function (l) {
+      history: (loans[r.key] || []).map(function (l) {
         return { from: l.from, to: l.to, at: l.at instanceof Date ? l.at.toISOString() : String(l.at), by: l.by, note: l.note };
       })
     };
   });
 
   return { people: Object.keys(people).sort(), categories: CATEGORY_ORDER.concat([OTHER_CATEGORY]), discs: discs };
+}
+
+/** Rows grouped by one field, { value: [rows in sheet order] }, so a lookup per disc doesn't scan the whole tab. */
+function groupBy_(rows, field) {
+  var out = {};
+  rows.forEach(function (r) {
+    var k = String(r[field]);
+    (out[k] = out[k] || []).push(r);
+  });
+  return out;
 }
 
 /** Everyone sees every disc; a digital title only reaches its owner, since it can't be lent. */
@@ -503,10 +618,14 @@ function withCategories_(data) {
 
 // ---------- Cache ----------
 
-function readLibraryCache_() {
+// The cached copy is tagged with the libRev it was built at. A copy built while a change landed carries the older
+// tag, so it is never used once the change has raised libRev.
+
+function readLibraryCache_(rev) {
   var cache = CacheService.getScriptCache();
-  var count = cache.get(CACHE_KEY + ':n');
-  if (!count) return null;
+  var head = cache.getAll([CACHE_KEY + ':n', CACHE_KEY + ':rev']);
+  var count = head[CACHE_KEY + ':n'];
+  if (!count || head[CACHE_KEY + ':rev'] !== String(rev)) return null;
   var keys = [];
   for (var i = 0; i < +count; i++) keys.push(CACHE_KEY + ':' + i);
   var parts = cache.getAll(keys);
@@ -518,12 +637,13 @@ function readLibraryCache_() {
   return JSON.parse(json);
 }
 
-function writeLibraryCache_(data) {
-  var json = JSON.stringify(data);
+function writeLibraryCache_(data, rev) {
+  var json = asciiJson(data);
   var values = {};
   var n = 0;
   for (var i = 0; i < json.length; i += CACHE_CHUNK) values[CACHE_KEY + ':' + n++] = json.slice(i, i + CACHE_CHUNK);
   values[CACHE_KEY + ':n'] = String(n);
+  values[CACHE_KEY + ':rev'] = String(rev);
   try {
     CacheService.getScriptCache().putAll(values, CACHE_SECONDS);
   } catch (e) {
@@ -533,6 +653,13 @@ function writeLibraryCache_(data) {
 
 function clearLibraryCache_() {
   CacheService.getScriptCache().remove(CACHE_KEY + ':n');
+}
+
+/** JSON with every non-ASCII character written as \uXXXX, so its length in characters is its size in bytes. */
+function asciiJson(data) {
+  return JSON.stringify(data).replace(/[\u007f-￿]/g, function (c) {
+    return '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4);
+  });
 }
 
 /** seenWhere is where the page showed the disc; if the sheet now says otherwise, nothing is written. */
@@ -545,32 +672,26 @@ function returnDisc(key, seenWhere, user) {
 }
 
 function changeHolder_(key, toName, note, seenWhere, user) {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
+  write_(true, function () {
     var inv = readInventory_();
     var row = inv.rows.filter(function (r) { return r.key === key && canSee_(r, user); })[0];
     if (!row) throw new Error('Disc not found. Reload the page.');
     if (row.digital) throw new Error(row.title + ' is digital and can\'t be lent.');
     var holder = row.where || row.owner;
     if (seenWhere && seenWhere !== holder) {
-      clearLibraryCache_();
       throw new Error(row.title + ' is now at ' + holder + '. The page has been refreshed, please try again.');
     }
     if (user.name !== row.owner && user.name !== holder) {
       throw new Error('Only ' + row.owner + ' or ' + holder + ' can change where this disc is.');
     }
     var target = toName || row.owner;
-    if (target === holder) return getLibrary_(user);
+    if (target === holder) return;
     inv.sheet.getRange(row.rowIndex, inv.cols.where + 1).setValue(target);
     sheet_(LOANS_SHEET, LOANS_HEADERS).appendRow([key, row.title, holder, target, new Date(), user.name, note]);
     setWhereSeen_(key, target);
     fulfilRequests_(key, target, user.name);
-    clearLibraryCache_();
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+  });
+  return getLibrary_(user);
 }
 
 // ---------- Requests ----------
@@ -579,9 +700,7 @@ function changeHolder_(key, toName, note, seenWhere, user) {
 // person who asked, when they cancel it, or when the holder declines it. Everyone sees the open requests.
 
 function requestDisc(key, note, user) {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
+  write_(true, function () {
     var row = readInventory_().rows.filter(function (r) { return r.key === key && canSee_(r, user); })[0];
     if (!row) throw new Error('Disc not found. Reload the page.');
     if (row.digital) throw new Error(row.title + ' is digital and can\'t be lent.');
@@ -589,20 +708,22 @@ function requestDisc(key, note, user) {
     var sh = sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
     var rows = readTable_(sh).rows;
     var asked = rows.some(function (r) { return r.disc === key && r.by === user.name && r.status === 'open'; });
-    if (!asked) sh.appendRow(['r-' + (rows.length + 1), key, row.title, user.name, cleanNote(note), new Date(), 'open', '', '']);
-    clearLibraryCache_();
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+    if (!asked) sh.appendRow([nextRequestId(rows), key, row.title, user.name, cleanNote(note), new Date(), 'open', '', '']);
+  });
+  return getLibrary_(user);
+}
+
+/** "r-" and one more than the highest number in use, so an id is never handed out twice, even after rows were deleted by hand. */
+function nextRequestId(rows) {
+  var max = 0;
+  rows.forEach(function (r) { var m = /^r-(\d+)$/.exec(String(r.id)); if (m) max = Math.max(max, +m[1]); });
+  return 'r-' + (max + 1);
 }
 
 /** how: 'cancel' (by the person who asked) or 'decline' (by whoever has the disc). */
 function closeRequest(id, how, user) {
   if (how !== 'cancel' && how !== 'decline') throw new Error('Unknown action.');
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
+  write_(true, function () {
     var sh = sheet_(REQUESTS_SHEET, REQUESTS_HEADERS);
     var rows = readTable_(sh).rows;
     var i = -1;
@@ -618,11 +739,8 @@ function closeRequest(id, how, user) {
       }
       setRequestStatus_(sh, i + 2, how === 'cancel' ? 'cancelled' : 'declined', user.name);
     }
-    clearLibraryCache_();
-    return getLibrary_(user);
-  } finally {
-    lock.releaseLock();
-  }
+  });
+  return getLibrary_(user);
 }
 
 /** Closes the open requests for a disc by the person it just reached. Callers hold the lock. */
@@ -639,10 +757,8 @@ function setRequestStatus_(sh, rowIndex, status, by) {
 
 /** The signed-in person's display name comes from the Users tab. */
 function currentUser_(email) {
-  var match = readTable_(sheet_(USERS_SHEET, USERS_HEADERS)).rows.filter(function (u) {
-    return String(u.email).toLowerCase() === email;
-  })[0];
-  return { email: email, name: match ? match.name : (email.split('@')[0] || 'guest') };
+  var users = usersByEmail_();
+  return { email: email, name: email in users ? users[email] : (email.split('@')[0] || 'guest') };
 }
 
 // ---------- Inventory ----------
@@ -720,16 +836,37 @@ function ensureSourceColumn_() {
 
 // ---------- Metadata ----------
 
-/** Fetches TMDB data for new or changed rows and logs manual "where?" edits. Run by triggers. */
+/**
+ * Fetches TMDB data for new or changed rows and logs manual "where?" edits. Run by triggers, also on every sheet edit.
+ * Only one run works at a time: a run that starts meanwhile leaves a note and stops, and the working run goes round
+ * again, so a burst of edits doesn't queue up runs that hold the lock the app needs.
+ */
 function refreshMetadata() {
-  clearLibraryCache_(); // the sheet may have just been edited
-  fetchMetadata_(syncWhere_());
+  CacheService.getScriptCache().removeAll(['access', 'users']); // the Users tab may have just been edited
+  var props = PropertiesService.getScriptProperties();
+  var gate = LockService.getDocumentLock();
+  if (!gate.tryLock(0)) {
+    props.setProperty(REFRESH_AGAIN_KEY, '1');
+    return;
+  }
+  try {
+    for (var round = 0; round < REFRESH_ROUNDS; round++) {
+      props.deleteProperty(REFRESH_AGAIN_KEY);
+      var todo = syncWhere_(); // raises the revs, since the sheet may have been edited by hand
+      var moves = fetchMetadata_(todo);
+      if (todo.length) write_(true, function () { moveSeen_(moves); });
+      if (!props.getProperty(REFRESH_AGAIN_KEY)) break;
+    }
+  } finally {
+    gate.releaseLock();
+  }
   warmLibraryCache(); // new metadata and logged edits are in the sheet now
 }
 
 /** Rebuilds the cached library from the sheet. Runs on a timer so visitors rarely hit a cold cache. */
 function warmLibraryCache() {
-  writeLibraryCache_(buildLibrary_());
+  var rev = revs_().lib; // read first: if a change lands during the build, this copy carries the older tag
+  writeLibraryCache_(buildLibrary_(), rev);
 }
 
 /**
@@ -737,9 +874,7 @@ function warmLibraryCache() {
  * so overlapping runs and lends never log a move twice. Returns the rows that need TMDB data.
  */
 function syncWhere_() {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(30000);
-  try {
+  return write_(true, function () {
     ensureKeys();
     var inv = readInventory_();
     var msh = sheet_(METADATA_SHEET, METADATA_HEADERS);
@@ -763,33 +898,36 @@ function syncWhere_() {
       if (isStale_(entry.row, d)) todo.push({ disc: d, meta: entry.row, rowIndex: entry.rowIndex });
     });
     return todo;
-  } finally {
-    lock.releaseLock();
-  }
+  });
 }
 
-/** Fills in TMDB data for up to MAX_FETCHES_PER_RUN rows. Only one run fetches at a time; the next trigger picks up the rest. */
+/**
+ * Fills in TMDB data for up to MAX_FETCHES_PER_RUN rows; the next run picks up the rest. refreshMetadata makes sure
+ * only one run fetches at a time. Returns the seen marks to move for discs that just got their first movie data.
+ */
 function fetchMetadata_(todo) {
-  var lock = LockService.getDocumentLock();
-  if (!lock.tryLock(0)) return;
-  try {
-    var msh = sheet_(METADATA_SHEET, METADATA_HEADERS);
-    todo.slice(0, MAX_FETCHES_PER_RUN).forEach(function (t) {
-      var d = t.disc;
-      var manual = isManual_(t.meta);
-      try {
-        var ids = manual && t.meta.tmdb_ids ? splitList(t.meta.tmdb_ids) : matchDisc_(d);
-        var data = buildData_(d, ids);
-        // Columns A-G only: where_seen (H) belongs to syncWhere_ and lending, which may have changed it meanwhile.
-        msh.getRange(t.rowIndex, 1, 1, 7).setValues([[d.key, d.title, d.yearRaw, ids.join(', '), manual, JSON.stringify(data), new Date()]]);
-        msh.getRange(t.rowIndex, 9).setValue(ids.length ? '' : 'no match');
-      } catch (e) {
-        msh.getRange(t.rowIndex, 9).setValue(String(e.message || e));
-      }
-    });
-  } finally {
-    lock.releaseLock();
-  }
+  var msh = sheet_(METADATA_SHEET, METADATA_HEADERS);
+  var moves = [];
+  todo.slice(0, MAX_FETCHES_PER_RUN).forEach(function (t) {
+    var d = t.disc;
+    var manual = isManual_(t.meta);
+    try {
+      var ids = manual && t.meta.tmdb_ids ? splitList(t.meta.tmdb_ids) : matchDisc_(d);
+      var data = buildData_(d, ids);
+      // Columns A-G only: where_seen (H) belongs to syncWhere_ and lending, which may have changed it meanwhile.
+      msh.getRange(t.rowIndex, 1, 1, 7).setValues([[d.key, d.title, d.yearRaw, ids.join(', '), manual, JSON.stringify(data), new Date()]]);
+      msh.getRange(t.rowIndex, 9).setValue(ids.length ? '' : 'no match');
+      var to = movieSeenKeys(data);
+      if (to.length && !movieSeenKeys(parseData_(t.meta.data_json)).length) moves.push({ from: 'disc:' + d.key, to: to, keep: hasSeries(data) });
+    } catch (e) {
+      msh.getRange(t.rowIndex, 9).setValue(String(e.message || e));
+    }
+  });
+  return moves;
+}
+
+function parseData_(json) {
+  try { return JSON.parse(json); } catch (e) { return null; }
 }
 
 function isManual_(m) {
@@ -1124,5 +1262,5 @@ function normalize(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, isDigital: isDigital, visibleDiscs: visibleDiscs };
+  module.exports = { checkTokenInfo: checkTokenInfo, pickTrailer: pickTrailer, germanTitle: germanTitle, splitList: splitList, parseYears: parseYears, cleanTitle: cleanTitle, parseSeason: parseSeason, parseCollectionItems: parseCollectionItems, cleanHousehold: cleanHousehold, cleanNote: cleanNote, genreCategories: genreCategories, searchResults: searchResults, parseImdbId: parseImdbId, checkWishRef: checkWishRef, discRow: discRow, cleanSources: cleanSources, isDigital: isDigital, visibleDiscs: visibleDiscs, nextRequestId: nextRequestId, movieSeenKeys: movieSeenKeys, hasSeries: hasSeries, asciiJson: asciiJson };
 }

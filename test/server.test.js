@@ -3,12 +3,14 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { fakeProperties } = require('./fakes');
 
 function load() {
   const writes = [];
   const store = {};
   const ctx = {
     module: { exports: {} },
+    PropertiesService: fakeProperties(),
     CacheService: { getScriptCache: () => ({
       get: k => store[k] || null, put: (k, v) => { store[k] = v; }, getAll: () => ({}), putAll: v => Object.assign(store, v), remove: k => { delete store[k]; }
     }) },
@@ -76,4 +78,24 @@ test('API returns the library and lends for people with access', () => {
   assert.deepStrictEqual(api(ctx, { action: 'library', token: 'x' }, info('S@example.com')), { ok: true, data: 'fresh library' });
   assert.strictEqual(api(ctx, { action: 'return', token: 'x', key: 'd-0001', seenWhere: 'Matthias' }, info('s@example.com')).ok, true);
   assert.strictEqual(writes[0], 'Steffen');
+});
+
+test('the library says "unchanged" when the page already has the newest copy', () => {
+  const c = { module: { exports: {} }, PropertiesService: fakeProperties({ rev: '7', libRev: '3' }) };
+  vm.createContext(c);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/Code.gs'), 'utf8'), c);
+  let tag;
+  c.readLibraryCache_ = rev => { tag = rev; return { people: [], categories: [], discs: [] }; };
+  c.personalData_ = () => ({ household: [], seen: {} });
+  c.readWishlist_ = () => [];
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(c.getLibrary_(steffen, 7))), { unchanged: true, rev: 7 });
+  const lib = c.getLibrary_(steffen, 6);
+  assert.strictEqual(lib.rev, 7);
+  assert.strictEqual(tag, 3); // the cached copy is only used if it was built at the current libRev
+});
+
+test('a lend raises both revs, so the cached library is rebuilt', () => {
+  const { ctx } = load();
+  ctx.returnDisc('d-0001', 'Matthias', steffen);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(ctx.revs_())), { rev: 1, lib: 1 });
 });

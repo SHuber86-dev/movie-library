@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { fakeProperties } = require('./fakes');
 
 const HEADERS = ['id', 'disc', 'title', 'by', 'note', 'at', 'status', 'closed_at', 'closed_by'];
 
@@ -22,6 +23,7 @@ function load(requests) {
   const holders = { 'd-0001': 'Matthias', 'd-0002': 'Anna' };
   const ctx = {
     module: { exports: {} },
+    PropertiesService: fakeProperties(),
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) }
   };
   vm.createContext(ctx);
@@ -90,7 +92,7 @@ test('the library lists open requests per disc, in the order they were made', ()
   ctx.sheet_ = name => name === 'Requests' ? sheet(name) : empty;
   ctx.readMetadata_ = () => ({});
   const discs = ctx.buildLibrary_().discs;
-  assert.deepStrictEqual(discs[0].requests.map(r => r.by), ['Anna', 'Steffen']);
+  assert.deepStrictEqual(Array.from(discs[0].requests.map(r => r.by)), ['Anna', 'Steffen']);
   // Anna asked for her own disc's return, and she has it now (a hand edit of "where?"), so it no longer shows.
   assert.strictEqual(discs[1].requests.length, 0);
 });
@@ -101,4 +103,11 @@ test('notes are trimmed, capped and never run as formulas', () => {
   assert.strictEqual(ctx.cleanNote('x'.repeat(300)).length, 200);
   assert.strictEqual(ctx.cleanNote('=IMPORTXML("x")'), "'=IMPORTXML(\"x\")");
   assert.strictEqual(ctx.cleanNote('-1 day'), "'-1 day");
+});
+
+test('request ids are never handed out twice, even after a row was deleted by hand', () => {
+  const { ctx, sheets } = load([open('r-1', 'd-0002', 'Steffen'), open('r-3', 'd-0002', 'Matthias')]); // r-2 was deleted
+  ctx.requestDisc('d-0001', '', anna);
+  assert.strictEqual(sheets.Requests.values[3][0], 'r-4');
+  assert.strictEqual(ctx.nextRequestId([]), 'r-1');
 });

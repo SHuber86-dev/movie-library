@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { fakeProperties } = require('./fakes');
 
 // A tiny in-memory sheet: getDataRange().getValues(), appendRow and deleteRow, like Apps Script.
 function fakeSheet(headers, rows) {
@@ -11,13 +12,19 @@ function fakeSheet(headers, rows) {
     values,
     getDataRange: () => ({ getValues: () => values.map(r => r.slice()) }),
     appendRow: r => values.push(r),
-    deleteRow: i => values.splice(i - 1, 1)
+    deleteRow: i => values.splice(i - 1, 1),
+    deleteRows: (i, n) => values.splice(i - 1, n),
+    getLastRow: () => values.length,
+    getMaxRows: () => values.length, // a full grid, so every append has to grow it
+    insertRowsAfter() {},
+    getRange: (r, c, nr, nc) => ({ setValues: v => v.forEach((row, i) => { values[r - 1 + i] = row.slice(); }) })
   };
 }
 
 function load(household, seen) {
   const ctx = {
     module: { exports: {} },
+    PropertiesService: fakeProperties(),
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) }
   };
   vm.createContext(ctx);
@@ -83,4 +90,44 @@ test('household names are cleaned and capped', () => {
   assert.deepStrictEqual(Array.from(ctx.cleanHousehold(['  Anna   Lena ', 'x'.repeat(60)], 'Steffen')), ['Anna Lena', 'x'.repeat(40)]);
   assert.throws(() => ctx.cleanHousehold('Mia', 'Steffen'), /Bad household/);
   assert.throws(() => ctx.cleanHousehold(Array.from({ length: 21 }, (_, i) => 'k' + i), 'Steffen'), /at most 20/);
+});
+
+test('a tick answers with only the marks and household, and a newer rev', () => {
+  const { ctx } = load([['s@example.com', 'Mia']]);
+  const before = ctx.revs_().rev;
+  const after = JSON.parse(JSON.stringify(ctx.markSeen([tick('movie:603', 'Mia', true)], steffen, 'personal')));
+  assert.deepStrictEqual(after, { rev: before + 1, household: ['Mia'], seen: { 'movie:603': ['Mia'] } });
+});
+
+test('a failed save still raises the rev, so pages don\'t keep a copy that may be half old', () => {
+  const { ctx, sheets } = load([['s@example.com', 'Mia']]);
+  sheets.Seen.appendRow = () => { throw new Error('sheet busy'); };
+  sheets.Seen.getRange = () => ({ setValues() { throw new Error('sheet busy'); } });
+  assert.throws(() => ctx.markSeen([tick('movie:603', 'Mia', true)], steffen), /sheet busy/);
+  assert.strictEqual(ctx.revs_().rev, 1);
+});
+
+test('unticking neighbouring rows deletes them in one call', () => {
+  const { ctx, sheets } = load([['s@example.com', 'Mia']], [
+    ['movie:1', 'A', 's@example.com', 'Mia', ''], ['movie:2', 'B', 's@example.com', 'Mia', ''],
+    ['movie:3', 'C', 'm@example.com', 'Paul', ''], ['movie:4', 'D', 's@example.com', 'Mia', '']
+  ]);
+  const calls = [];
+  const del = sheets.Seen.deleteRows;
+  sheets.Seen.deleteRows = (i, n) => { calls.push([i, n]); del(i, n); };
+  ctx.markSeen([tick('movie:1', 'Mia', false), tick('movie:2', 'Mia', false), tick('movie:4', 'Mia', false)], steffen);
+  assert.deepStrictEqual(calls, [[5, 1], [2, 2]]);
+  assert.deepStrictEqual(sheets.Seen.values.slice(1).map(r => r[0]), ['movie:3']);
+});
+
+test('marks made before a disc had movie data move to the movie', () => {
+  const { ctx, sheets } = load([], [
+    ['disc:d-0012', 'Heat', 's@example.com', 'Mia', ''], ['movie:949', 'Heat', 's@example.com', 'Steffen', ''],
+    ['disc:d-0012', 'Heat', 's@example.com', 'Steffen', ''], ['disc:d-0013', 'Lost – Season 1', 's@example.com', 'Mia', '']
+  ]);
+  ctx.moveSeen_([{ from: 'disc:d-0012', to: ['movie:949'], keep: false }]);
+  assert.deepStrictEqual(sheets.Seen.values.slice(1).map(r => r[0] + ' ' + r[3]).sort(),
+    ['disc:d-0013 Mia', 'movie:949 Mia', 'movie:949 Steffen']);
+  assert.deepStrictEqual(Array.from(ctx.movieSeenKeys({ items: [{ kind: 'movie', tmdbId: 1 }, { kind: 'tv', tmdbId: 2 }] })), ['movie:1']);
+  assert.strictEqual(ctx.hasSeries({ items: [{ kind: 'movie', tmdbId: 1 }] }), false);
 });
