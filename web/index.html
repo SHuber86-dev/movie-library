@@ -41,7 +41,10 @@
       <div id="signin" class="hidden"></div>
     </div>
     <div id="filters" class="filters max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-4 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
-      <input id="q" placeholder="Search title, cast, director…" class="col-span-4 sm:flex-1 sm:min-w-[12rem] bg-white/5 rounded px-3 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
+      <div class="relative col-span-4 sm:flex-1 sm:min-w-[12rem]">
+        <input id="q" autocomplete="off" placeholder="Search the library, or find a movie or series to add…" class="w-full bg-white/5 rounded pl-3 pr-9 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
+        <button type="button" data-clear="q" hidden aria-label="Clear search" class="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full text-gray-400 hover:text-gray-100 hover:bg-white/10">✕</button>
+      </div>
       <select id="fOwner" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">All owners</option></select>
       <select id="fStatus" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
         <option value="">Any status</option><option value="home">At owner</option><option value="out">Lent out</option><option value="mine">My shelf</option><option value="requested">Requested</option>
@@ -56,7 +59,10 @@
       <select id="fGenre" class="col-span-2 min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2"><option value="">All genres</option></select>
     </div>
     <div id="wishFilters" hidden class="filters max-w-7xl mx-auto px-4 pb-2 sm:pb-3 grid grid-cols-3 gap-1.5 sm:flex sm:flex-wrap sm:gap-2 text-xs sm:text-sm">
-      <input id="wq" autocomplete="off" placeholder="Search the wishlist, or find a movie or series to add…" class="col-span-3 sm:flex-1 sm:min-w-[12rem] bg-white/5 rounded px-3 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
+      <div class="relative col-span-3 sm:flex-1 sm:min-w-[12rem]">
+        <input id="wq" autocomplete="off" placeholder="Search the wishlist, or find a movie or series to add…" class="w-full bg-white/5 rounded pl-3 pr-9 py-1.5 sm:py-2 outline-none focus:ring-1 ring-white/30">
+        <button type="button" data-clear="wq" hidden aria-label="Clear search" class="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full text-gray-400 hover:text-gray-100 hover:bg-white/10">✕</button>
+      </div>
       <select id="wKind" class="min-w-0 bg-white/5 rounded px-1 sm:px-2 py-1.5 sm:py-2">
         <option value="">Movies & series</option><option value="movie">Movies</option><option value="tv">Series</option>
       </select>
@@ -70,6 +76,7 @@
   <main class="max-w-7xl mx-auto px-4 py-2 sm:py-4">
     <p id="status" class="text-gray-400 text-xs sm:text-sm mb-2 sm:mb-3">Loading library…</p>
     <p id="notice" class="hidden fixed bottom-4 left-4 right-4 sm:left-auto sm:max-w-sm z-30 bg-amber-500 text-black text-sm rounded-lg px-4 py-3 shadow-lg"></p>
+    <section id="libResults" class="mb-4"></section>
     <div id="grid" class="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 sm:gap-4"></div>
     <div id="wishView" class="hidden space-y-4">
       <section id="addResults"></section>
@@ -296,6 +303,7 @@ function render(data, stale) {
   if (state.openKey === HOUSEHOLD) openHousehold();
   else if (state.openKey === REQUESTS) openRequests();
   else if (state.openKey && state.openKey.indexOf(WISH_PREFIX) === 0) openWish(state.openKey.slice(WISH_PREFIX.length));
+  else if (state.openKey && state.openKey.indexOf(ADD_PREFIX) === 0) return; // keep what is typed into the add form
   else if (state.openKey) openGroup(state.openKey);
 }
 
@@ -352,6 +360,7 @@ function applyFilters() {
     discCount + ' of ' + state.data.discs.length + ' discs' + (state.stale ? ' · updating…' : '') +
     (Object.keys(readOutbox()).length ? ' · saving ticks…' : '');
   document.getElementById('grid').innerHTML = shown.map(card).join('');
+  drawResults('library');
 }
 
 // The genre categories of a title: those of every film on its discs, or "Other" without movie data.
@@ -560,6 +569,7 @@ function redraw() {
   if (state.openKey === HOUSEHOLD) openHousehold();
   else if (state.openKey === REQUESTS) openRequests();
   else if (state.openKey && state.openKey.indexOf(WISH_PREFIX) === 0) openWish(state.openKey.slice(WISH_PREFIX.length));
+  else if (state.openKey && state.openKey.indexOf(ADD_PREFIX) === 0) return; // keep what is typed into the add form
   else if (state.openKey) openGroup(state.openKey);
 }
 
@@ -643,7 +653,6 @@ function closeRequest(id, how) {
 // The search box filters the wishlist and, after a short pause, also searches TMDB (or an IMDb link) for titles to add.
 
 var WISH_PREFIX = 'wish:';
-var wish = { results: null, error: '', loading: false, seq: 0, timer: null, cache: {}, adding: {} };
 
 // Switches between the library and the wishlist. The choice is kept in the address, so a reload or a shared link keeps it.
 function showView(view, quiet) {
@@ -658,17 +667,14 @@ function showView(view, quiet) {
   document.getElementById('filters').hidden = onWish;
   document.getElementById('wishFilters').hidden = !onWish;
   document.getElementById('grid').classList.toggle('hidden', onWish);
+  document.getElementById('libResults').classList.toggle('hidden', onWish);
   document.getElementById('wishView').classList.toggle('hidden', !onWish);
   if (!quiet && state.data) applyFilters();
 }
 
-function wishQuery() {
-  return document.getElementById('wq').value.replace(/\s+/g, ' ').trim();
-}
-
 function drawWishView() {
   var all = state.data.wishlist || [];
-  var q = wishQuery().toLowerCase();
+  var q = findQuery('wishlist').toLowerCase();
   var kind = document.getElementById('wKind').value;
   var by = document.getElementById('wBy').value;
   var sort = document.getElementById('wSort').value;
@@ -683,7 +689,7 @@ function drawWishView() {
   document.getElementById('status').textContent = shown.length + ' of ' + all.length + ' titles on the wishlist' + (state.stale ? ' · updating…' : '');
   document.getElementById('wishGrid').innerHTML = shown.length ? shown.map(function (w) { return wishCard(w, owned); }).join('') :
     '<p class="col-span-full text-sm text-gray-400">' + (all.length ? 'Nothing on the wishlist matches.' : 'The wishlist is empty. Search above to add a movie or series.') + '</p>';
-  drawWishResults();
+  drawResults('wishlist');
 }
 
 function wishCard(w, owned) {
@@ -725,31 +731,6 @@ function openWish(ref) {
   document.getElementById('modal').classList.remove('hidden');
 }
 
-// Searches TMDB after a short pause in typing. Answers that arrive after a newer search started are dropped.
-function wishSearch() {
-  var q = wishQuery();
-  clearTimeout(wish.timer);
-  wish.seq++;
-  wish.error = '';
-  if (q.length < 2) { wish.results = null; wish.loading = false; return drawWishResults(); }
-  var key = q.toLowerCase();
-  if (wish.cache[key]) { wish.results = wish.cache[key]; wish.loading = false; return drawWishResults(); }
-  wish.loading = true;
-  drawWishResults();
-  var seq = wish.seq;
-  wish.timer = setTimeout(function () {
-    api('search', { q: q }).then(function (results) {
-      wish.cache[key] = results;
-      if (seq !== wish.seq) return;
-      wish.results = results; wish.loading = false;
-      drawWishResults();
-    }, function (err) {
-      if (seq !== wish.seq) return;
-      wish.results = null; wish.error = err && err.message || String(err); wish.loading = false;
-      drawWishResults();
-    });
-  }, 350);
-}
 
 // "movie:603" / "tv:1396" refs of everything in the library, so the wishlist can say what is already there.
 function libraryRefs() {
@@ -766,21 +747,94 @@ function wishedRefs() {
   return refs;
 }
 
-// TMDB results as a row of small posters above the wishlist, each with its add button.
-function drawWishResults() {
-  var box = document.getElementById('addResults');
-  var heading = '<h3 class="text-sm uppercase tracking-wide text-gray-400 mb-2">Add from TMDB</h3>';
-  if (wish.error) { box.innerHTML = heading + '<p class="text-sm text-amber-400">' + esc(wish.error) + '</p>'; return; }
-  if (wish.loading && !wish.results) { box.innerHTML = heading + '<p class="text-sm text-gray-400">Searching…</p>'; return; }
-  if (!wish.results) { box.innerHTML = ''; return; }
-  if (!wish.results.length) { box.innerHTML = heading + '<p class="text-sm text-gray-400">No movies or series found.</p>'; return; }
+
+function wishLinks(w) {
+  return (w.imdbId ? '<a class="underline" target="_blank" href="https://www.imdb.com/title/' + esc(w.imdbId) + '/">IMDb</a> · ' : '') +
+    '<a class="underline" target="_blank" href="https://www.themoviedb.org/' + esc(w.kind) + '/' + esc(w.tmdbId) + '">TMDB</a> · ' +
+    '<a class="underline" target="_blank" href="' + esc(trailerUrl(w)) + '">▶ Trailer</a>';
+}
+
+function addWish(ref) {
+  finder.adding[ref] = true;
+  drawResults('wishlist');
+  busy();
+  api('wish', { ref: ref }).then(function (data) { delete finder.adding[ref]; fresh(data); }, function (err) { delete finder.adding[ref]; changeFailed(err); });
+}
+
+function unwish(ref) {
+  state.data.wishlist = (state.data.wishlist || []).filter(function (w) { return w.ref !== ref; });
+  closeModal();
+  redraw();
+  busy();
+  api('unwish', { ref: ref }).then(fresh, changeFailed);
+}
+
+// ---------- Finding titles on TMDB ----------
+// The library and wishlist search boxes filter their own page and, after a short pause, also search TMDB
+// (or an IMDb link) for titles to add. Each page keeps its own results; answers are shared between them.
+
+var finder = {
+  library: { input: 'q', box: 'libResults', heading: 'Add to the library from TMDB', results: null, error: '', loading: false, seq: 0, timer: null },
+  wishlist: { input: 'wq', box: 'addResults', heading: 'Add from TMDB', results: null, error: '', loading: false, seq: 0, timer: null },
+  cache: {}, adding: {}, found: {}
+};
+
+function findQuery(view) {
+  return document.getElementById(finder[view].input).value.replace(/\s+/g, ' ').trim();
+}
+
+// Searches TMDB after a short pause in typing. Answers that arrive after a newer search started are dropped.
+function findTitles(view) {
+  var f = finder[view];
+  var q = findQuery(view);
+  clearTimeout(f.timer);
+  f.seq++;
+  f.error = '';
+  if (q.length < 2) { f.results = null; f.loading = false; return drawResults(view); }
+  var key = q.toLowerCase();
+  if (finder.cache[key]) { f.results = finder.cache[key]; f.loading = false; return drawResults(view); }
+  f.loading = true;
+  drawResults(view);
+  var seq = f.seq;
+  f.timer = setTimeout(function () {
+    api('search', { q: q }).then(function (results) {
+      finder.cache[key] = results;
+      if (seq !== f.seq) return;
+      f.results = results; f.loading = false;
+      drawResults(view);
+    }, function (err) {
+      if (seq !== f.seq) return;
+      f.results = null; f.error = err && err.message || String(err); f.loading = false;
+      drawResults(view);
+    });
+  }, 350);
+}
+
+// TMDB results as a row of small posters, each with its add button.
+function drawResults(view) {
+  var f = finder[view];
+  var box = document.getElementById(f.box);
+  var heading = '<h3 class="text-sm uppercase tracking-wide text-gray-400 mb-2">' + f.heading + '</h3>';
+  if (f.error) { box.innerHTML = heading + '<p class="text-sm text-amber-400">' + esc(f.error) + '</p>'; return; }
+  if (f.loading && !f.results) { box.innerHTML = heading + '<p class="text-sm text-gray-400">Searching…</p>'; return; }
+  if (!f.results) { box.innerHTML = ''; return; }
+  if (!f.results.length) { box.innerHTML = heading + '<p class="text-sm text-gray-400">No movies or series found.</p>'; return; }
   var owned = libraryRefs();
   var wished = wishedRefs();
-  box.innerHTML = heading + '<div class="flex gap-3 overflow-x-auto pb-2' + (wish.loading ? ' opacity-60' : '') + '">' + wish.results.map(function (r) {
-    var action = owned[r.ref] ? '<span class="text-xs text-emerald-400">In library</span>'
-      : wished[r.ref] ? '<span class="text-xs text-sky-300">On wishlist</span>'
-      : wish.adding[r.ref] ? '<span class="text-xs text-gray-400">Adding…</span>'
-      : '<button class="rounded px-2 py-1 text-xs bg-sky-600 hover:bg-sky-500" onclick="addWish(\'' + esc(r.ref) + '\')">+ Wishlist</button>';
+  box.innerHTML = heading + '<div class="flex gap-3 overflow-x-auto pb-2' + (f.loading ? ' opacity-60' : '') + '">' + f.results.map(function (r) {
+    finder.found[r.ref] = r;
+    var action;
+    if (view === 'library') {
+      action = finder.adding[r.ref] ? '<span class="text-xs text-gray-400">Adding…</span>'
+        : (owned[r.ref] ? '<div class="text-xs text-emerald-400">In library</div>' : wished[r.ref] ? '<div class="text-xs text-sky-300">On wishlist</div>' : '') +
+          '<button class="rounded px-2 py-1 text-xs ' + (owned[r.ref] ? 'bg-white/10 hover:bg-white/20' : 'bg-emerald-600 hover:bg-emerald-500') +
+          '" onclick="openAdd(\'' + esc(r.ref) + '\')">' + (owned[r.ref] ? '+ Copy' : '+ Library') + '</button>';
+    } else {
+      action = owned[r.ref] ? '<span class="text-xs text-emerald-400">In library</span>'
+        : wished[r.ref] ? '<span class="text-xs text-sky-300">On wishlist</span>'
+        : finder.adding[r.ref] ? '<span class="text-xs text-gray-400">Adding…</span>'
+        : '<button class="rounded px-2 py-1 text-xs bg-sky-600 hover:bg-sky-500" onclick="addWish(\'' + esc(r.ref) + '\')">+ Wishlist</button>';
+    }
     var poster = r.poster ? '<img loading="lazy" decoding="async" class="poster w-full object-cover rounded" src="' + IMG + 'w185' + esc(r.poster) + '" alt="">'
       : '<div class="poster w-full rounded bg-white/5 flex items-center justify-center p-2 text-center text-xs text-gray-400">' + esc(r.title) + '</div>';
     return '<div class="w-24 sm:w-28 shrink-0 space-y-1" title="' + esc(r.overview) + '">' + poster +
@@ -790,25 +844,79 @@ function drawWishResults() {
   }).join('') + '</div>';
 }
 
-function wishLinks(w) {
-  return (w.imdbId ? '<a class="underline" target="_blank" href="https://www.imdb.com/title/' + esc(w.imdbId) + '/">IMDb</a> · ' : '') +
-    '<a class="underline" target="_blank" href="https://www.themoviedb.org/' + esc(w.kind) + '/' + esc(w.tmdbId) + '">TMDB</a> · ' +
-    '<a class="underline" target="_blank" href="' + esc(trailerUrl(w)) + '">▶ Trailer</a>';
+// ---------- Adding discs ----------
+// A title found on TMDB becomes a new row in the sheet, owned by the person adding it. The form asks for what the
+// sheet row needs beyond the title: the disc formats, a season for a series, and an optional note.
+
+var ADD_PREFIX = 'add:';
+var FORMATS = ['HD Blu Ray', '4k Blu Ray', '3D Blu Ray'];
+
+function openAdd(ref) {
+  var r = finder.found[ref];
+  if (!r) return;
+  state.openKey = ADD_PREFIX + ref;
+  var copies = state.data.discs.filter(function (d) {
+    return (d.meta && d.meta.items || []).some(function (i) { return i.kind + ':' + i.tmdbId === ref; });
+  });
+  var wished = wishedRefs()[ref];
+  var field = 'bg-white/5 rounded px-3 py-1.5 outline-none focus:ring-1 ring-white/30';
+  document.getElementById('detail').innerHTML =
+    '<form class="p-5 space-y-4 text-sm" onsubmit="addDisc(event, \'' + esc(ref) + '\')">' +
+      '<div class="flex items-start gap-4">' +
+        (r.poster ? '<img decoding="async" class="w-20 sm:w-28 rounded self-start" src="' + IMG + 'w185' + esc(r.poster) + '" alt="">' : '') +
+        '<div class="space-y-1 min-w-0 mr-auto">' +
+          '<div class="text-xs uppercase tracking-wide text-gray-400">Add to the library</div>' +
+          '<h2 class="text-2xl font-semibold">' + esc(r.title) + '</h2>' +
+          '<div class="text-gray-400">' + esc([r.year, r.kind === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ')) + '</div>' +
+          (copies.length ? '<div class="text-emerald-400">Already in the library: ' + esc(copies.map(function (d) {
+            return d.title + ' (' + formatBadges([d]) + ', ' + d.owner + ')';
+          }).join('; ')) + '</div>' : '') +
+        '</div>' +
+        '<button type="button" onclick="closeModal()" class="bg-white/10 rounded-full w-8 h-8 shrink-0">✕</button>' +
+      '</div>' +
+      '<fieldset><legend class="text-gray-400 mb-1.5">Format</legend><div class="flex flex-wrap gap-2">' + FORMATS.map(function (f, i) {
+        return '<label class="flex items-center gap-1.5 bg-white/5 rounded px-3 py-1.5 cursor-pointer">' +
+          '<input type="checkbox" name="format" value="' + esc(f) + '"' + (i === 0 ? ' checked' : '') + '> ' + esc(f.replace('4k', '4K')) + '</label>';
+      }).join('') + '</div></fieldset>' +
+      (r.kind === 'tv' ? '<label class="block"><span class="block text-gray-400 mb-1.5">Season</span>' +
+        '<input id="addSeason" type="number" min="1" max="99" inputmode="numeric" placeholder="e.g. 1" class="w-28 ' + field + '">' +
+        '<span class="block text-xs text-gray-400 mt-1">Leave empty for a box set of the whole series.</span></label>' : '') +
+      '<label class="block"><span class="block text-gray-400 mb-1.5">Note (optional)</span>' +
+        '<input id="addNotes" maxlength="200" placeholder="e.g. Steelbook, UK release" class="w-full ' + field + '"></label>' +
+      (wished ? '<label class="flex items-center gap-2"><input id="addUnwish" type="checkbox" checked> Remove it from the wishlist (added by ' + esc(wished.by) + ')</label>' : '') +
+      '<p class="text-gray-400">It is added as your disc, ' + esc(state.data.user.name) + ', and at your place. You can edit the row in the sheet any time.</p>' +
+      '<p id="addError" class="hidden text-amber-400"></p>' +
+      '<div class="flex justify-end gap-2">' +
+        '<button type="button" onclick="closeModal()" class="rounded px-4 py-1.5 bg-white/10 hover:bg-white/20">Cancel</button>' +
+        '<button class="rounded px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500">Add to library</button>' +
+      '</div>' +
+    '</form>';
+  document.getElementById('modal').classList.remove('hidden');
 }
 
-function addWish(ref) {
-  wish.adding[ref] = true;
-  drawWishResults();
-  busy();
-  api('wish', { ref: ref }).then(function (data) { delete wish.adding[ref]; fresh(data); }, function (err) { delete wish.adding[ref]; changeFailed(err); });
-}
-
-function unwish(ref) {
-  state.data.wishlist = (state.data.wishlist || []).filter(function (w) { return w.ref !== ref; });
+function addDisc(e, ref) {
+  e.preventDefault();
+  var form = e.target;
+  var formats = Array.prototype.filter.call(form.querySelectorAll('input[name=format]'), function (x) { return x.checked; }).map(function (x) { return x.value; });
+  if (!formats.length) {
+    var err = document.getElementById('addError');
+    err.textContent = 'Pick at least one format.';
+    err.classList.remove('hidden');
+    return;
+  }
+  var season = document.getElementById('addSeason');
+  var unwish = document.getElementById('addUnwish');
+  var title = finder.found[ref].title;
+  var params = { ref: ref, formats: formats, season: season ? season.value : '', notes: document.getElementById('addNotes').value, unwish: !!(unwish && unwish.checked) };
   closeModal();
-  redraw();
+  finder.adding[ref] = true;
+  drawResults('library');
   busy();
-  api('unwish', { ref: ref }).then(fresh, changeFailed);
+  api('addDisc', params).then(function (data) {
+    delete finder.adding[ref];
+    fresh(data);
+    alertBox(title + ' is in the library now.');
+  }, function (err) { delete finder.adding[ref]; changeFailed(err); });
 }
 
 // ---------- Household ----------
@@ -940,7 +1048,20 @@ function closeModal() {
   document.getElementById(id).addEventListener('input', applyFilters);
   document.getElementById(id).addEventListener('input', markSetFilters);
 });
-document.getElementById('wq').addEventListener('input', wishSearch);
+document.getElementById('q').addEventListener('input', function () { findTitles('library'); });
+document.getElementById('wq').addEventListener('input', function () { findTitles('wishlist'); });
+// The ✕ in a search box empties it, as if the text had been deleted by hand.
+document.querySelectorAll('[data-clear]').forEach(function (b) {
+  var input = document.getElementById(b.dataset.clear);
+  var sync = function () { b.hidden = !input.value; };
+  input.addEventListener('input', sync);
+  b.addEventListener('click', function () {
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+  });
+  sync();
+});
 document.getElementById('detail').addEventListener('click', function (e) {
   var b = e.target.closest('[data-seen-key]');
   if (b) toggleSeen(b.dataset.seenKey, b.dataset.person, b.dataset.title);
